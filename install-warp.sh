@@ -50,7 +50,7 @@ ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 EOF
 echo "Dockerfile 已創建。"
 
-# 3. 生成啟動腳本 entrypoint.sh
+# 3. 生成啟動腳本 entrypoint.sh (最終修正版)
 echo -e "\n${YELLOW}[3/6] 生成 entrypoint.sh 啟動腳本...${NC}"
 cat <<'EOF' > entrypoint.sh
 #!/bin/bash
@@ -65,8 +65,7 @@ done
 echo "warp-svc is ready."
 
 echo "Setting WARP to SOCKS5 proxy mode on port 1080..."
-warp-cli --accept-tos mode proxy
-warp-cli --accept-tos set-local-proxy-port 1080
+warp-cli --accept-tos set-mode proxy --proxy-port 1080
 
 if [ ! -f /var/lib/cloudflare-warp/reg.json ]; then
   echo "WARP is not registered. Registering now..."
@@ -91,7 +90,7 @@ EOF
 chmod +x entrypoint.sh
 echo "entrypoint.sh 已創建並設為可執行。"
 
-# 4. 生成 docker-compose.yml 文件 (已修正為 mapping 語法)
+# 4. 生成 docker-compose.yml 文件
 echo -e "\n${YELLOW}[4/6] 生成 docker-compose.yml...${NC}"
 cat <<'EOF' > docker-compose.yml
 services:
