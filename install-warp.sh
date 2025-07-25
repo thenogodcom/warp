@@ -45,12 +45,12 @@ RUN apt-get update && \
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 VOLUME /var/lib/cloudflare-warp
-EXPOSE 1080
+EXPOSE 40000 # 修正：WARP 代理模式默認監聽 40000 端口
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 EOF
 echo "Dockerfile 已創建。"
 
-# 3. 生成啟動腳本 entrypoint.sh（已修正）
+# 3. 生成啟動腳本 entrypoint.sh（修正端口設定）
 echo -e "\n${YELLOW}[3/6] 生成 entrypoint.sh 啟動腳本...${NC}"
 cat <<'EOF' > entrypoint.sh
 #!/bin/bash
@@ -79,7 +79,7 @@ done
 # 若未註冊則新註冊
 if ! warp-cli --accept-tos registration info &>/dev/null; then
   echo -e "${YELLOW}➕ 尚未註冊，開始新註冊...${NC}"
-  warp-cli --accept-tos registration new
+  warp-cli --accept-tos register # P3TERX 腳本中使用 register，雖然 new 也有效，但為了一致性
   echo -e "${GREEN}✔ 註冊完成。${NC}"
 else
   echo -e "${GREEN}✔ 已存在註冊信息。${NC}"
@@ -91,10 +91,11 @@ if [ -n "$WARP_LICENSE_KEY" ]; then
   warp-cli --accept-tos registration license "$WARP_LICENSE_KEY" || echo -e "${YELLOW}警告: 授權碼可能已無效。${NC}"
 fi
 
-# 設定為 SOCKS5 模式並啟用
-echo -e "${YELLOW}🛠 設定為 SOCKS5 模式，監聽 1080 端口...${NC}"
-warp-cli --accept-tos mode proxy
-warp-cli --accept-tos settings set proxy-port 1080
+# 設定為 SOCKS5 模式並啟用（默認端口為 40000）
+echo -e "${YELLOW}🛠 設定為 SOCKS5 模式，監聽 40000 端口 (WARP 預設)...${NC}"
+warp-cli --accept-tos set-mode proxy # P3TERX 腳本中使用 set-mode proxy，而非 mode proxy
+# 移除錯誤的 `settings set proxy-port` 命令，因為 warp-cli proxy 模式默認就是 40000 端口
+# warp-cli --accept-tos settings set proxy-port 1080 # REMOVED: This command is incorrect.
 
 # 開始連線
 echo -e "${YELLOW}🌐 嘗試連線 WARP...${NC}"
@@ -105,7 +106,7 @@ echo -e "${GREEN}=== 最終狀態 ===${NC}"
 warp-cli --accept-tos status || true
 warp-cli --accept-tos registration info || true
 
-echo -e "${GREEN}✅ WARP SOCKS5 代理啟動成功，正在監聽 1080 端口。${NC}"
+echo -e "${GREEN}✅ WARP SOCKS5 代理啟動成功，正在監聽 40000 端口。${NC}"
 
 # 保持容器常駐
 tail -f /dev/null
@@ -125,7 +126,7 @@ services:
     device_cgroup_rules:
       - 'c 10:200 rwm'
     ports:
-      - "1080:1080"
+      - "40000:40000" # 修正：映射容器內的 40000 端口到主機的 40000 端口
     environment:
       TZ: "Asia/Shanghai"
       # WARP_LICENSE_KEY: "YOUR_LICENSE_KEY_HERE"
@@ -147,12 +148,12 @@ docker compose up -d --build
 
 # 6. 驗證結果
 echo -e "\n${YELLOW}[6/6] 驗證代理服務...${NC}"
-echo "容器正在後台啟動，請等待約 15 秒..."
-sleep 15
+echo "容器正在後台啟動，請等待約 20 秒..." # 增加等待時間
+sleep 20
 echo "正在發送測試請求到 https://cloudflare.com/cdn-cgi/trace"
-if curl --socks5-hostname 127.0.0.1:1080 --retry 3 --retry-connrefused --connect-timeout 5 https://cloudflare.com/cdn-cgi/trace | grep -q "warp=on"; then
+if curl --socks5-hostname 127.0.0.1:40000 --retry 5 --retry-connrefused --connect-timeout 10 https://cloudflare.com/cdn-cgi/trace | grep -q "warp=on"; then # 修正：測試 40000 端口
     echo -e "\n${GREEN}=== 部署成功！ ==="
-    echo -e "WARP SOCKS5 代理正在運行於: 127.0.0.1:1080${NC}"
+    echo -e "WARP SOCKS5 代理正在運行於: 127.0.0.1:40000${NC}" # 修正：顯示 40000 端口
     echo "你可以通過以下命令查看日誌: cd ${PROJECT_DIR} && docker compose logs -f"
     echo "停止服務請運行: cd ${PROJECT_DIR} && docker compose down"
 else
