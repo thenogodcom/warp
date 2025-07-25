@@ -1,222 +1,278 @@
-#!/bin/bash
+#!/usr/bin/env bash
+#
+# Description: Docker Container Manager for caomingjun/warp, inspired by P3TERX/warp.sh
+# Author: Your Name (Inspired by P3TERX)
+# Version: 2.0.0
 
-#=================================================
-#	System Required: CentOS/Debian/Ubuntu
-#	Description: WARP Docker Container One-Key Script
-#	Author: Your Name
-#	Blog: https://your.blog.com
-#	Version: 1.1.0 (Fixed interactive issue with curl|bash)
-#=================================================
+# --- Color Definitions & Log Function (from P3TERX) ---
+FontColor_Red="\033[31m"
+FontColor_Green="\033[32m"
+FontColor_Yellow="\033[33m"
+FontColor_Purple="\033[35m"
+FontColor_Suffix="\033[0m"
 
-# 顏色定義
-GREEN="\033[32m"
-RED="\033[31m"
-YELLOW="\033[33m"
-NC="\033[0m" # No Color
+log() {
+    local LEVEL="$1"
+    local MSG="$2"
+    case "${LEVEL}" in
+    INFO)
+        local LEVEL="[${FontColor_Green}${LEVEL}${FontColor_Suffix}]"
+        local MSG="${LEVEL} ${MSG}"
+        ;;
+    WARN)
+        local LEVEL="[${FontColor_Yellow}${LEVEL}${FontColor_Suffix}]"
+        local MSG="${LEVEL} ${MSG}"
+        ;;
+    ERROR)
+        local LEVEL="[${FontColor_Red}${LEVEL}${FontColor_Suffix}]"
+        local MSG="${LEVEL} ${MSG}"
+        ;;
+    *) ;;
+    esac
+    echo -e "${MSG}"
+}
 
-# Docker 容器配置
-CONTAINER_NAME="warp"
+# --- Docker Container Configuration ---
+CONTAINER_NAME="warp-docker"
 IMAGE_NAME="caomingjun/warp"
 VOLUME_PATH="$(pwd)/warp-data"
 
-# 檢查 Docker 是否安裝並運行
+# --- Prerequisite Checks ---
 check_docker() {
     if ! [ -x "$(command -v docker)" ]; then
-        echo -e "${RED}錯誤: Docker 未安裝。請先安裝 Docker。${NC}"
+        log ERROR "Docker is not installed. Please install Docker first."
         exit 1
     fi
     if ! docker info >/dev/null 2>&1; then
-        echo -e "${RED}錯誤: Docker 服務未運行。請啟動 Docker 服務。${NC}"
+        log ERROR "Docker service is not running. Please start the Docker service."
         exit 1
     fi
 }
 
-# 檢查容器是否存在
+# --- Helper Functions ---
 check_container_exists() {
     if [ "$(docker ps -a -q -f name=^/${CONTAINER_NAME}$)" ]; then
-        return 0 # 存在
+        return 0 # Exists
     else
-        return 1 # 不存在
+        return 1 # Does not exist
     fi
 }
 
-# 安裝 WARP 容器
-install_warp() {
+press_any_key_to_continue() {
+    echo ""
+    read -p "Press Enter to return to the main menu..." < /dev/tty
+}
+
+# --- Core Management Functions ---
+
+# 1. Install Container
+install_warp_container() {
     if check_container_exists; then
-        echo -e "${YELLOW}WARP 容器 (${CONTAINER_NAME}) 已存在。如果您想重新安裝，請先選擇卸載。${NC}"
+        log WARN "WARP container (${CONTAINER_NAME}) already exists. Please uninstall it first if you want to reinstall."
         return
     fi
 
-    echo -e "${GREEN}開始安裝 WARP 容器...${NC}"
+    log INFO "Starting WARP container installation..."
 
-    # 交互式詢問配置 (!!!修正點: 添加 < /dev/tty)
-    read -p "請輸入要映射到主機的 SOCKS5 代理端口 (留空默認 1080): " PROXY_PORT < /dev/tty
+    read -p "Enter the SOCKS5 proxy port to map to the host (default: 1080): " PROXY_PORT < /dev/tty
     PROXY_PORT=${PROXY_PORT:-1080}
 
-    read -p "您是否有 WARP+ 授權碼 (License Key)? (有則輸入, 無則直接回車): " WARP_LICENSE_KEY < /dev/tty
+    read -p "Do you have a WARP+ License Key? (Enter if you have, otherwise leave blank): " WARP_LICENSE_KEY < /dev/tty
 
-    read -p "是否啟用 NAT 模式 (用於旁路由等)? (y/N): " ENABLE_NAT_CHOICE < /dev/tty
+    read -p "Enable NAT mode (for side router, etc.)? (y/N): " ENABLE_NAT_CHOICE < /dev/tty
     
-    # 準備 docker run 命令
-    DOCKER_CMD="docker run -d --name ${CONTAINER_NAME} --restart always"
-    
-    # 添加設備規則和能力
-    DOCKER_CMD+=" --device-cgroup-rule='c 10:200 rwm'"
-    DOCKER_CMD+=" --cap-add=MKNOD --cap-add=AUDIT_WRITE --cap-add=NET_ADMIN"
-    
-    # 添加 sysctls
-    DOCKER_CMD+=" --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv4.conf.all.src_valid_mark=1"
-    
-    # 添加端口映射
-    DOCKER_CMD+=" -p ${PROXY_PORT}:1080"
-    
-    # 添加環境變量
-    DOCKER_CMD+=" -e WARP_SLEEP=2"
-    if [ -n "$WARP_LICENSE_KEY" ]; then
-        DOCKER_CMD+=" -e WARP_LICENSE_KEY=${WARP_LICENSE_KEY}"
-    fi
+    # Use array to build the command safely
+    DOCKER_CMD_ARRAY=(
+        "docker" "run" "-d" 
+        "--name" "${CONTAINER_NAME}"
+        "--restart" "always"
+        "--device-cgroup-rule" "c 10:200 rwm"
+        "--cap-add" "MKNOD" "--cap-add" "AUDIT_WRITE" "--cap-add" "NET_ADMIN"
+        "--sysctl" "net.ipv6.conf.all.disable_ipv6=0"
+        "--sysctl" "net.ipv4.conf.all.src_valid_mark=1"
+        "-p" "${PROXY_PORT}:1080"
+        "-e" "WARP_SLEEP=3"
+    )
 
-    # 處理 NAT 配置
+    [ -n "$WARP_LICENSE_KEY" ] && DOCKER_CMD_ARRAY+=("-e" "WARP_LICENSE_KEY=${WARP_LICENSE_KEY}")
+
     if [[ "$ENABLE_NAT_CHOICE" =~ ^[yY]$ ]]; then
-        DOCKER_CMD+=" -e WARP_ENABLE_NAT=1"
-        DOCKER_CMD+=" --sysctl net.ipv4.ip_forward=1"
-        DOCKER_CMD+=" --sysctl net.ipv6.conf.all.forwarding=1"
-        echo -e "${YELLOW}NAT 模式已啟用。${NC}"
+        DOCKER_CMD_ARRAY+=(
+            "-e" "WARP_ENABLE_NAT=1"
+            "--sysctl" "net.ipv4.ip_forward=1"
+            "--sysctl" "net.ipv6.conf.all.forwarding=1"
+        )
+        log INFO "NAT mode has been enabled."
     fi
 
-    # 創建並添加數據卷
     mkdir -p ${VOLUME_PATH}
-    DOCKER_CMD+=" -v ${VOLUME_PATH}:/var/lib/cloudflare-warp"
+    DOCKER_CMD_ARRAY+=("-v" "${VOLUME_PATH}:/var/lib/cloudflare-warp")
+    DOCKER_CMD_ARRAY+=("${IMAGE_NAME}")
 
-    # 添加鏡像名稱
-    DOCKER_CMD+=" ${IMAGE_NAME}"
-
-    # 執行命令
-    echo -e "${YELLOW}正在執行以下命令:${NC}"
-    echo -e "${GREEN}${DOCKER_CMD}${NC}"
+    log INFO "Executing the following command:"
+    echo -e "${FontColor_Green}${DOCKER_CMD_ARRAY[*]}${FontColor_Suffix}"
     
-    if ${DOCKER_CMD}; then
-        echo -e "${GREEN}WARP 容器已成功安裝並啟動！${NC}"
-        echo "--------------------------------------------------"
-        echo -e "${GREEN}使用方法:${NC}"
-        if [[ "$ENABLE_NAT_CHOICE" =~ ^[yY]$ ]]; then
-            echo -e "您已啟用 NAT 模式，請將需要走 WARP 網絡的設備的網關指向運行此容器的主機 IP。"
-        else
-            echo -e "SOCKS5 代理地址: ${YELLOW}127.0.0.1:${PROXY_PORT}${NC}"
-            echo -e "測試代理是否工作:"
-            echo -e "${GREEN}curl --proxy socks5h://127.0.0.1:${PROXY_PORT} https://www.cloudflare.com/cdn-cgi/trace${NC}"
-        fi
-        echo "--------------------------------------------------"
+    if "${DOCKER_CMD_ARRAY[@]}"; then
+        log INFO "WARP container installed and started successfully!"
+        log INFO "Please wait about 10 seconds for the container to initialize..."
     else
-        echo -e "${RED}WARP 容器安裝失敗。請檢查日誌。${NC}"
+        log ERROR "WARP container installation failed. Please check the Docker logs."
     fi
 }
 
-# 卸載 WARP 容器
-uninstall_warp() {
+# 2. Uninstall Container
+uninstall_warp_container() {
     if ! check_container_exists; then
-        echo -e "${RED}錯誤: WARP 容器 (${CONTAINER_NAME}) 未找到。${NC}"
+        log ERROR "WARP container (${CONTAINER_NAME}) not found."
         return
     fi
 
-    echo -e "${YELLOW}正在停止並移除 WARP 容器...${NC}"
+    log INFO "Stopping and removing WARP container..."
     docker stop ${CONTAINER_NAME} >/dev/null 2>&1
     docker rm ${CONTAINER_NAME} >/dev/null 2>&1
-    echo -e "${GREEN}WARP 容器已移除。${NC}"
+    log INFO "WARP container removed."
 
-    # (!!!修正點: 添加 < /dev/tty)
-    read -p "是否需要刪除本地的 WARP 配置數據 (位於 ${VOLUME_PATH})? (y/N): " REMOVE_DATA_CHOICE < /dev/tty
+    read -p "Do you want to delete the local WARP configuration data (in ${VOLUME_PATH})? (y/N): " REMOVE_DATA_CHOICE < /dev/tty
     if [[ "$REMOVE_DATA_CHOICE" =~ ^[yY]$ ]]; then
         rm -rf ${VOLUME_PATH}
-        echo -e "${GREEN}配置數據已刪除。${NC}"
+        log INFO "Configuration data has been deleted."
     else
-        echo -e "${YELLOW}配置數據已保留。${NC}"
+        log INFO "Configuration data has been kept."
     fi
 }
 
-# 更新 WARP 容器
-update_warp() {
+# 3. Update Container
+update_warp_container() {
     if ! check_container_exists; then
-        echo -e "${RED}錯誤: WARP 容器 (${CONTAINER_NAME}) 未找到。請先安裝。${NC}"
+        log ERROR "WARP container (${CONTAINER_NAME}) not found. Please install it first."
         return
     fi
 
-    echo -e "${YELLOW}1. 正在拉取最新的 Docker 鏡像...${NC}"
+    log INFO "1. Pulling the latest Docker image..."
     docker pull ${IMAGE_NAME}
 
-    echo -e "${YELLOW}2. 正在停止並移除舊容器...${NC}"
+    log INFO "2. Stopping and removing the old container..."
     docker stop ${CONTAINER_NAME}
     docker rm ${CONTAINER_NAME}
 
-    echo -e "${YELLOW}3. 正在使用原有配置重新創建容器...${NC}"
-    echo -e "${GREEN}鏡像已更新。請再次運行安裝選項來使用新鏡像創建容器。您的註冊數據將會被保留。${NC}"
-    install_warp
+    log INFO "3. Re-creating the container with the new image..."
+    log WARN "The script will now run the installation process again. Your registration data is preserved."
+    install_warp_container
 }
 
-# 查看日誌
+# 4. View Logs
 view_logs() {
     if ! check_container_exists; then
-        echo -e "${RED}錯誤: WARP 容器 (${CONTAINER_NAME}) 未找到。${NC}"
+        log ERROR "WARP container (${CONTAINER_NAME}) not found."
         return
     fi
-    echo -e "${YELLOW}正在顯示 WARP 容器的日誌 (按 Ctrl+C 退出)...${NC}"
+    log INFO "Displaying logs for WARP container (Press Ctrl+C to exit)..."
     docker logs -f ${CONTAINER_NAME}
 }
 
-# 主菜單
-start_menu() {
-    clear
-    echo "================================================="
-    echo "    WARP Docker 容器一鍵管理腳本"
-    echo "================================================="
-    echo -e "${GREEN}1. 安裝 WARP 容器${NC}"
-    echo -e "${GREEN}2. 卸載 WARP 容器${NC}"
-    echo -e "${GREEN}3. 更新 WARP 容器${NC}"
-    echo -e "${GREEN}4. 查看容器日誌${NC}"
-    echo "-------------------------------------------------"
-    echo -e "0. 退出腳本"
-    echo ""
-
-    # 顯示容器狀態
-    if check_container_exists; then
-        STATUS=$(docker inspect --format '{{.State.Status}}' ${CONTAINER_NAME})
-        if [ "$STATUS" == "running" ]; then
-            echo -e "容器狀態: ${GREEN}運行中${NC}"
-        else
-            echo -e "容器狀態: ${RED}${STATUS}${NC}"
-        fi
-    else
-        echo -e "容器狀態: ${RED}未安裝${NC}"
+# 5. Check Status
+check_status() {
+    if ! check_container_exists; then
+        CONTAINER_STATUS_zh="${FontColor_Red}未安装${FontColor_Suffix}"
+        WARP_CONNECTION_zh="${FontColor_Red}N/A${FontColor_Suffix}"
+        SOCKS5_PORT_zh="${FontColor_Red}N/A${FontColor_Suffix}"
+        return
     fi
-    echo ""
+    
+    STATUS=$(docker inspect --format '{{.State.Status}}' ${CONTAINER_NAME})
+    if [ "$STATUS" == "running" ]; then
+        CONTAINER_STATUS_zh="${FontColor_Green}运行中${FontColor_Suffix}"
+        
+        # Check internal WARP status via SOCKS5 proxy
+        PROXY_PORT=$(docker inspect --format='{{(index (index .HostConfig.PortBindings "1080/tcp") 0).HostPort}}' ${CONTAINER_NAME})
+        SOCKS5_PORT_zh="${FontColor_Green}${PROXY_PORT}${FontColor_Suffix}"
 
-    # (!!!修正點: 添加 < /dev/tty)
-    read -p "請輸入選項 [0-4]: " num < /dev/tty
-    case "$num" in
-        1)
-            install_warp
+        # Give it a few seconds to respond
+        WARP_STATUS=$(docker exec ${CONTAINER_NAME} curl -s --proxy socks5h://127.0.0.1:1080 https://www.cloudflare.com/cdn-cgi/trace --connect-timeout 5 | grep "warp=" | cut -d'=' -f2)
+
+        case ${WARP_STATUS} in
+        on)
+            WARP_CONNECTION_zh="${FontColor_Green}已连接 (WARP)${FontColor_Suffix}"
             ;;
-        2)
-            uninstall_warp
-            ;;
-        3)
-            update_warp
-            ;;
-        4)
-            view_logs
-            ;;
-        0)
-            exit 0
+        plus)
+            WARP_CONNECTION_zh="${FontColor_Green}已连接 (WARP+)${FontColor_Suffix}"
             ;;
         *)
-            clear
-            echo -e "${RED}錯誤: 請輸入正確的數字 [0-4]${NC}"
-            sleep 2
-            start_menu
+            WARP_CONNECTION_zh="${FontColor_Yellow}正在连接...${FontColor_Suffix}"
             ;;
-    esac
+        esac
+    else
+        CONTAINER_STATUS_zh="${FontColor_Red}已停止 (${STATUS})${FontColor_Suffix}"
+        WARP_CONNECTION_zh="${FontColor_Red}未连接${FontColor_Suffix}"
+        SOCKS5_PORT_zh="${FontColor_Red}N/A${FontColor_Suffix}"
+    fi
 }
 
-# 腳本入口
+
+# --- Menu ---
+start_menu() {
+    while true; do
+        log INFO "Checking status..."
+        check_status
+        clear
+        echo -e "
+${FontColor_Purple}WARP Docker Container Manager${FontColor_Suffix} (Style by ${FontColor_Yellow}P3TERX${FontColor_Suffix})
+
+ --------------------------------------------------
+  容器状态   : ${CONTAINER_STATUS_zh}
+  WARP 连接  : ${WARP_CONNECTION_zh}
+  SOCKS5 端口: ${SOCKS5_PORT_zh}
+ --------------------------------------------------
+
+ ${FontColor_Green}1.${FontColor_Suffix} 安装 WARP 容器
+ ${FontColor_Green}2.${FontColor_Suffix} 卸載 WARP 容器
+ ${FontColor_Green}3.${FontColor_Suffix} 更新 WARP 容器
+ ${FontColor_Green}4.${FontColor_Suffix} 查看容器日誌
+ 
+ ${FontColor_Yellow}0.${FontColor_Suffix} 退出脚本
+"
+        read -p "请输入选项 [0-4]: " num < /dev/tty
+        case "$num" in
+            1)
+                install_warp_container
+                press_any_key_to_continue
+                ;;
+            2)
+                uninstall_warp_container
+                press_any_key_to_continue
+                ;;
+            3)
+                update_warp_container
+                press_any_key_to_continue
+                ;;
+            4)
+                view_logs
+                # No need for press_any_key here, as Ctrl+C will exit logs
+                ;;
+            0)
+                exit 0
+                ;;
+            *)
+                log ERROR "无效输入，请输入正确的数字 [0-4]"
+                sleep 2
+                ;;
+        esac
+    done
+}
+
+# --- Script Entrypoint ---
+clear
+cat <<-'EOM'
+
+ __      __   _   _   _   ____   _____   ____   _   _   _   ____
+ \ \    / /  / \ | | | | |  _ \ | ____| |  _ \ | | | | / \ |  _ \
+  \ \  / /  / _ \| | | | | |_) ||  _|   | |_) || | | |/ _ \| | | |
+   \ \/ /  / ___ \ |_| | |  _ < | |___  |  _ < | |_| / ___ \ | | |
+    \__/  /_/   \_\___/  |_| \_\|_____| |_| \_\ \___//_/   \_\_| |_|
+
+EOM
+echo -e "${FontColor_Purple}WARP Docker Container Manager - Inspired by P3TERX/warp.sh${FontColor_Suffix}"
+echo "----------------------------------------------------------------"
+
 check_docker
 start_menu
