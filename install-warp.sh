@@ -50,14 +50,19 @@ ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 EOF
 echo "Dockerfile 已創建。"
 
-# 3. 生成啟動腳本 entrypoint.sh (已使用新的 warp-cli 命令)
+# 3. 生成啟動腳本 entrypoint.sh (最終穩健版)
 echo -e "\n${YELLOW}[3/6] 生成 entrypoint.sh 啟動腳本...${NC}"
 cat <<'EOF' > entrypoint.sh
 #!/bin/bash
 set -e
 echo "Starting WARP entrypoint script..."
 /usr/bin/warp-svc &
-sleep "${WARP_SLEEP:-3}"
+sleep "${WARP_SLEEP:-5}"
+
+echo "Setting WARP to SOCKS5 proxy mode..."
+warp-cli --accept-tos mode proxy || echo "Failed to set mode, continuing..."
+warp-cli --accept-tos proxy-port 1080 || echo "Failed to set port, continuing..."
+
 if [ ! -f /var/lib/cloudflare-warp/reg.json ]; then
   echo "WARP is not registered. Registering now..."
   warp-cli --accept-tos registration new
@@ -65,23 +70,23 @@ if [ ! -f /var/lib/cloudflare-warp/reg.json ]; then
 else
   echo "WARP is already registered."
 fi
+
 if [ -n "$WARP_LICENSE_KEY" ]; then
     echo "Setting WARP+ license key..."
     warp-cli --accept-tos registration license "$WARP_LICENSE_KEY"
     echo "License key set."
 fi
-echo "Setting WARP to SOCKS5 proxy mode on port 1080..."
-warp-cli --accept-tos mode proxy
-warp-cli --accept-tos proxy-port 1080
+
 echo "Connecting to WARP..."
 warp-cli --accept-tos connect
-echo "WARP proxy is running."
+
+echo "WARP proxy is running. Tailing logs to keep container alive."
 tail -f /dev/null
 EOF
 chmod +x entrypoint.sh
 echo "entrypoint.sh 已創建並設為可執行。"
 
-# 4. 生成 docker-compose.yml 文件
+# 4. 生成 docker-compose.yml 文件 (已移除 version 標籤)
 echo -e "\n${YELLOW}[4/6] 生成 docker-compose.yml...${NC}"
 cat <<'EOF' > docker-compose.yml
 services:
