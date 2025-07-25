@@ -50,7 +50,7 @@ ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 EOF
 echo "Dockerfile 已創建。"
 
-# 3. 生成啟動腳本 entrypoint.sh (使用穩健的 socket 等待機制)
+# 3. 生成啟動腳本 entrypoint.sh
 echo -e "\n${YELLOW}[3/6] 生成 entrypoint.sh 啟動腳本...${NC}"
 cat <<'EOF' > entrypoint.sh
 #!/bin/bash
@@ -58,7 +58,6 @@ set -e
 echo "Starting WARP entrypoint script..."
 /usr/bin/warp-svc &
 
-# 使用更可靠的方法等待 warp-svc 準備就緒
 echo "Waiting for warp-svc to be ready..."
 while [ ! -S /run/cloudflare-warp/warp_service ]; do
   sleep 1
@@ -92,7 +91,7 @@ EOF
 chmod +x entrypoint.sh
 echo "entrypoint.sh 已創建並設為可執行。"
 
-# 4. 生成 docker-compose.yml 文件
+# 4. 生成 docker-compose.yml 文件 (已修正 environment 語法)
 echo -e "\n${YELLOW}[4/6] 生成 docker-compose.yml...${NC}"
 cat <<'EOF' > docker-compose.yml
 services:
@@ -106,6 +105,7 @@ services:
     ports:
       - "1080:1080"
     environment:
+      - TZ=Asia/Shanghai
       # - WARP_LICENSE_KEY=YOUR_LICENSE_KEY_HERE
     cap_add:
       - MKNOD
