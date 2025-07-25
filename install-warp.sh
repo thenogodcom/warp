@@ -120,7 +120,7 @@ echo "docker-compose.yml 已創建。"
 
 # 5. 構建並在後台啟動容器
 echo -e "\n${YELLOW}[5/6] 使用 Docker Compose 構建並啟動容器...${NC}"
-docker-compose up -d --build
+docker compose up -d --build
 
 # 6. 驗證結果
 echo -e "\n${YELLOW}[6/6] 驗證代理服務...${NC}"
