@@ -14,8 +14,6 @@ if ! command -v docker &> /dev/null; then
     echo -e "${YELLOW}錯誤: Docker 未安裝。請先安裝 Docker 再運行此腳本。${NC}"
     exit 1
 fi
-
-# 使用新的檢測方式，檢查 docker compose (V2)
 if ! docker compose version &> /dev/null; then
     echo -e "${YELLOW}錯誤: Docker Compose 未安裝。請先安裝 Docker Compose 再運行此腳本。${NC}"
     exit 1
@@ -34,11 +32,8 @@ echo "完成。當前目錄: $(pwd)"
 # 2. 生成 Dockerfile
 echo -e "\n${YELLOW}[2/6] 生成 Dockerfile...${NC}"
 cat <<'EOF' > Dockerfile
-# 使用官方的 Debian Stable Slim 作為基礎映像
 FROM debian:stable-slim
-# 設置環境變量，避免安裝過程中出現交互式提示
 ENV DEBIAN_FRONTEND=noninteractive
-# 安裝 WARP 所需的依賴，並添加 Cloudflare 的官方軟件源
 RUN apt-get update && \
     apt-get install -y curl gnupg ca-certificates lsb-release && \
     curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg && \
@@ -47,20 +42,15 @@ RUN apt-get update && \
     apt-get install -y cloudflare-warp && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
-# 複製我們的啟動腳本到容器中
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-# 給予啟動腳本可執行權限
 RUN chmod +x /usr/local/bin/entrypoint.sh
-# 聲明數據卷，用於持久化 WARP 的賬戶信息
 VOLUME /var/lib/cloudflare-warp
-# 暴露 SOCKS5 代理端口
 EXPOSE 1080
-# 設置容器的入口點
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 EOF
 echo "Dockerfile 已創建。"
 
-# 3. 生成啟動腳本 entrypoint.sh
+# 3. 生成啟動腳本 entrypoint.sh (已使用新的 warp-cli 命令)
 echo -e "\n${YELLOW}[3/6] 生成 entrypoint.sh 啟動腳本...${NC}"
 cat <<'EOF' > entrypoint.sh
 #!/bin/bash
@@ -70,19 +60,19 @@ echo "Starting WARP entrypoint script..."
 sleep "${WARP_SLEEP:-3}"
 if [ ! -f /var/lib/cloudflare-warp/reg.json ]; then
   echo "WARP is not registered. Registering now..."
-  warp-cli --accept-tos register
+  warp-cli --accept-tos registration new
   echo "Registration complete."
 else
   echo "WARP is already registered."
 fi
 if [ -n "$WARP_LICENSE_KEY" ]; then
     echo "Setting WARP+ license key..."
-    warp-cli --accept-tos set-license "$WARP_LICENSE_KEY"
+    warp-cli --accept-tos registration license "$WARP_LICENSE_KEY"
     echo "License key set."
 fi
 echo "Setting WARP to SOCKS5 proxy mode on port 1080..."
-warp-cli --accept-tos set-mode proxy
-warp-cli --accept-tos set-proxy-port 1080
+warp-cli --accept-tos mode proxy
+warp-cli --accept-tos proxy-port 1080
 echo "Connecting to WARP..."
 warp-cli --accept-tos connect
 echo "WARP proxy is running."
@@ -94,7 +84,6 @@ echo "entrypoint.sh 已創建並設為可執行。"
 # 4. 生成 docker-compose.yml 文件
 echo -e "\n${YELLOW}[4/6] 生成 docker-compose.yml...${NC}"
 cat <<'EOF' > docker-compose.yml
-version: "3.8"
 services:
   warp:
     build: .
@@ -107,7 +96,7 @@ services:
       - "1080:1080"
     environment:
       - WARP_SLEEP=5
-      # - WARP_LICENSE_KEY=YOUR_LICENSE_KEY_HERE # 可選：編輯此文件並填寫你的 WARP+ 密鑰
+      # - WARP_LICENSE_KEY=YOUR_LICENSE_KEY_HERE
     cap_add:
       - MKNOD
       - AUDIT_WRITE
@@ -122,7 +111,6 @@ echo "docker-compose.yml 已創建。"
 
 # 5. 構建並在後台啟動容器
 echo -e "\n${YELLOW}[5/6] 使用 Docker Compose 構建並啟動容器...${NC}"
-# *** 這裡已經被修正為 docker compose (帶空格) ***
 docker compose up -d --build
 
 # 6. 驗證結果
@@ -133,7 +121,6 @@ echo "正在發送測試請求到 https://cloudflare.com/cdn-cgi/trace"
 if curl --socks5-hostname 127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace | grep -q "warp=on"; then
     echo -e "\n${GREEN}=== 部署成功！ ==="
     echo -e "WARP SOCKS5 代理正在運行於: 127.0.0.1:1080${NC}"
-    # *** 這裡的提示信息也已經被修正 ***
     echo "你可以通過以下命令查看日誌: cd ${PROJECT_DIR} && docker compose logs -f"
     echo "停止服務請運行: cd ${PROJECT_DIR} && docker compose down"
 else
