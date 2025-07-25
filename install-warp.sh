@@ -15,7 +15,7 @@ if ! command -v docker &> /dev/null; then
     exit 1
 fi
 if ! docker compose version &> /dev/null; then
-    echo -e "${YELLOW}錯誤: Docker Compose 未安裝。請先安裝 Docker Compose 再運行此腳cript。${NC}"
+    echo -e "${YELLOW}錯誤: Docker Compose 未安裝。請先安裝 Docker Compose 再運行此腳本。${NC}"
     exit 1
 fi
 
@@ -51,7 +51,7 @@ EOF
 echo "Dockerfile 已創建。"
 echo -e "${YELLOW}注意: Dockerfile 中的 EXPOSE 指令已設定為 40000 端口，這是 WARP 代理模式的預設端口。${NC}"
 
-# 3. 生成啟動腳本 entrypoint.sh
+# 3. 生成啟動腳本 entrypoint.sh (修復註冊邏輯)
 echo -e "\n${YELLOW}[3/6] 生成 entrypoint.sh 啟動腳本...${NC}"
 cat <<'EOF' > entrypoint.sh
 #!/bin/bash
@@ -78,21 +78,31 @@ trap "echo -e '\n${YELLOW}捕獲到停止信號 (SIGTERM/SIGINT)，正在優雅�
 
 # --- 嘗試註冊 WARP 服務 ---
 MAX_ATTEMPTS=20 # 增加嘗試次數以確保服務有足夠時間啟動
-attempt_counter=0
 
 echo -e "${YELLOW}⌛ 嘗試啟動 warp-svc 並進行註冊...${NC}"
 
 # 函數：檢查服務狀態並嘗試註冊
 function attempt_registration {
+  # 首先檢查是否已經註冊
+  # warp-cli --accept-tos registration info 會在未註冊時返回非零狀態
+  if warp-cli --accept-tos registration info &>/dev/null; then
+    echo -e "${GREEN}✔ warp-svc 已就緒且已註冊。${NC}"
+    return 0 # 已經註冊，直接返回成功
+  fi
+
+  # 如果未註冊，則嘗試新註冊
+  echo -e "${YELLOW}➕ 尚未註冊，開始新註冊...${NC}"
+  local current_attempt=0 # 函數內部局部變量
   until warp-cli --accept-tos registration new &> /dev/null; do
-    echo -e "${YELLOW}等待 warp-svc 初始化並可註冊... 嘗試 $((++attempt_counter)) 之 $MAX_ATTEMPTS${NC}"
+    echo -e "${YELLOW}等待 warp-svc 初始化並可註冊... 嘗試 $((++current_attempt)) 之 $MAX_ATTEMPTS${NC}"
     sleep 1
-    if [[ $attempt_counter -ge $MAX_ATTEMPTS ]]; then
+    if [[ $current_attempt -ge $MAX_ATTEMPTS ]]; then
       echo -e "${YELLOW}❌ 經過 $MAX_ATTEMPTS 次嘗試後，未能成功註冊 WARP 服務。${NC}"
       return 1 # 返回失敗狀態
     fi
   done
-  echo -e "${GREEN}✔ warp-svc 已成功啟動並完成註冊！${NC}"
+  echo -e "${GREEN}✔ warp-svc 已成功啟動並完成新註冊！${NC}"
+  return 0
 }
 
 # 調用註冊函數，如果失敗則退出
@@ -205,8 +215,6 @@ echo "docker-compose.yml 已創建。"
 
 # 5. 使用 Docker Compose 構建並在後台啟動容器
 echo -e "\n${YELLOW}[5/6] 使用 Docker Compose 構建並啟動容器...${NC}"
-# 注意：這裡使用 --force-recreate 可以確保即使沒有文件修改，也會重新創建容器
-# 但更重要的是，--build 會強制重建鏡像，確保 Dockerfile 的修改生效
 docker compose up -d --build --force-recreate
 
 # 6. 驗證代理服務
