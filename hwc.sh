@@ -2,7 +2,7 @@
 #
 # Description: Ultimate All-in-One Manager for Caddy, WARP & Hysteria with self-installing shortcut.
 # Author: Your Name (Inspired by P3TERX)
-# Version: 5.0.0-modular-final
+# Version: 5.1.0-pro-config
 
 # --- 第1节：全局配置与定义 ---
 
@@ -56,19 +56,24 @@ container_exists() { docker ps -a --format '{{.Names}}' | grep -q "^${1}$"; }
 press_any_key() { echo ""; read -p "按 Enter 键返回主菜单..." < /dev/tty; }
 
 generate_caddy_config() {
+    local domain="$1" email="$2" log_mode="$3"
     mkdir -p "${CADDY_CONFIG_DIR}"
     local log_level_config=""
-    if [[ ! "$2" =~ ^[yY]$ ]]; then
-        log_level_config="log { output stderr format console level ERROR }"
+    if [[ ! "$log_mode" =~ ^[yY]$ ]]; then
+        log_level_config="    log {\n        output stderr\n        level  ERROR\n    }"
     fi
     cat > "${CADDY_CONFIG_FILE}" << EOF
 # 由 hwc 脚本自动生成
-${1} {
-    ${log_level_config}
+{
+    email ${email}
+}
+
+${domain} {
+${log_level_config}
     respond "Service is running." 200
 }
 EOF
-    log INFO "已为域名 ${1} 创建 Caddyfile 配置文件。";
+    log INFO "已为域名 ${domain} 创建 Caddyfile 配置文件。";
 }
 
 generate_hysteria_config() {
@@ -79,7 +84,6 @@ generate_hysteria_config() {
         log_level="info"
     fi
     cat > "${HYSTERIA_CONFIG_FILE}" << EOF
-# 由 hwc 脚本自动生成
 listen: :443
 logLevel: ${log_level}
 auth:
@@ -93,7 +97,8 @@ outbounds:
     type: direct
   - name: warp
     type: socks5
-    server: ${WARP_CONTAINER_NAME}:1080
+    socks5:
+      addr: ${WARP_CONTAINER_NAME}:1080
 acl:
   inline:
     - direct(suffix:youtube.com)
@@ -120,9 +125,10 @@ manage_caddy() {
                 1)
                     log INFO "--- 正在安装 Caddy ---"
                     read -p "请输入 Caddy 将要管理的域名 (必须指向本机IP): " DOMAIN < /dev/tty
-                    if [ -z "$DOMAIN" ]; then log ERROR "域名不能为空。"; press_any_key; continue; fi
+                    read -p "请输入您的邮箱 (用于SSL证书申请与续期通知): " EMAIL < /dev/tty
+                    if [ -z "$DOMAIN" ] || [ -z "$EMAIL" ]; then log ERROR "域名和邮箱不能为空。"; press_any_key; continue; fi
                     read -p "是否为 Caddy 启用详细日志？(用于排错，默认为否) (y/N): " LOG_MODE < /dev/tty
-                    generate_caddy_config "$DOMAIN" "$LOG_MODE"
+                    generate_caddy_config "$DOMAIN" "$EMAIL" "$LOG_MODE"
                     docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
                     CADDY_CMD=(docker run -d --name "${CADDY_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -p 80:80/tcp -p 443:443/tcp -v "${CADDY_CONFIG_FILE}:/etc/caddy/Caddyfile:ro" -v "${CADDY_DATA_VOLUME}:/data" "${CADDY_IMAGE_NAME}")
                     if "${CADDY_CMD[@]}"; then log INFO "Caddy 部署成功。正在后台申请证书，请稍候..."; else log ERROR "Caddy 部署失败。"; fi
@@ -135,15 +141,15 @@ manage_caddy() {
         while true; do
             clear; log INFO "--- 管理 Caddy (已安装) ---"
             echo " 1. 查看日志"
-            echo " 2. 查看/编辑 Caddyfile"
-            echo " 3. 重启 Caddy"
+            echo " 2. 编辑 Caddyfile 并重启"
+            echo " 3. 重启 Caddy 容器"
             echo " 4. 卸载 Caddy"
             echo " 0. 返回主菜单"
             read -p "请输入选项: " choice < /dev/tty
             case "$choice" in
                 1) docker logs -f "$CADDY_CONTAINER_NAME"; press_any_key;;
-                2) log INFO "显示配置文件: ${CADDY_CONFIG_FILE}"; cat "${CADDY_CONFIG_FILE}"; press_any_key;;
-                3) log INFO "正在重启 Caddy..."; docker restart "$CADDY_CONTAINER_NAME"; sleep 2;;
+                2) if check_editor; then "$EDITOR" "${CADDY_CONFIG_FILE}"; log INFO "配置已保存。正在重启 Caddy 以应用更改..."; docker restart "$CADDY_CONTAINER_NAME"; sleep 2; else press_any_key; fi;;
+                3) log INFO "正在重启 Caddy 容器..."; docker restart "$CADDY_CONTAINER_NAME"; sleep 2;;
                 4) 
                     log WARN "Hysteria 依赖 Caddy 提供证书，卸载 Caddy 将导致 Hysteria 无法工作。"
                     read -p "确定要卸载 Caddy 吗? (y/N): " uninstall_choice < /dev/tty
@@ -185,7 +191,7 @@ manage_warp() {
             echo " 1. 查看日志"
             echo " 2. 检查状态 (Trace)"
             echo " 3. 升级到 WARP+"
-            echo " 4. 重启 WARP"
+            echo " 4. 重启 WARP 容器"
             echo " 5. 卸载 WARP"
             echo " 0. 返回主菜单"
             read -p "请输入选项: " choice < /dev/tty
@@ -196,7 +202,7 @@ manage_warp() {
                    log WARN "请在容器 Shell 中粘贴并执行以下命令: warp-cli --accept-tos registration license 您的授权码"
                    docker exec -it "$WARP_CONTAINER_NAME" /bin/bash
                    log INFO "正在重启 WARP 以应用更改..."; docker restart "$WARP_CONTAINER_NAME"; sleep 2; press_any_key;;
-                4) log INFO "正在重启 WARP..."; docker restart "$WARP_CONTAINER_NAME"; sleep 2;;
+                4) log INFO "正在重启 WARP 容器..."; docker restart "$WARP_CONTAINER_NAME"; sleep 2;;
                 5)
                     log WARN "Hysteria 依赖 WARP 作为网络出口，卸载 WARP 将导致 Hysteria 无法工作。"
                     read -p "确定要卸载 WARP 吗? (y/N): " uninstall_choice < /dev/tty
@@ -226,9 +232,20 @@ manage_hysteria() {
                         log ERROR "依赖项缺失！请务必先安装 Caddy 和 WARP。"
                         press_any_key; continue
                     fi
+                    
+                    local caddy_domain
+                    caddy_domain=$(awk 'NR>1 && NF==2 && $2=="{" {print $1; exit}' "${CADDY_CONFIG_FILE}" 2>/dev/null)
+                    
                     log INFO "--- 正在安装 Hysteria ---"
                     read -p "是否为 Hysteria 启用详细日志？(默认为否) (y/N): " LOG_MODE < /dev/tty
-                    read -p "请输入您的域名 (必须与Caddy配置的域名一致): " DOMAIN < /dev/tty
+                    
+                    if [ -n "$caddy_domain" ]; then
+                        read -p "请输入您的域名 [默认: ${caddy_domain}]: " DOMAIN < /dev/tty
+                        DOMAIN=${DOMAIN:-$caddy_domain}
+                    else
+                        read -p "请输入您的域名 (必须与Caddy配置的域名一致): " DOMAIN < /dev/tty
+                    fi
+
                     read -p "请为 Hysteria 设置一个连接密码: " PASSWORD < /dev/tty
                     if [ -z "$DOMAIN" ] || [ -z "$PASSWORD" ]; then log ERROR "域名和密码为必填项。"; press_any_key; continue; fi
                     
@@ -244,15 +261,15 @@ manage_hysteria() {
         while true; do
             clear; log INFO "--- 管理 Hysteria (已安装) ---"
             echo " 1. 查看日志"
-            echo " 2. 查看/编辑配置文件"
-            echo " 3. 重启 Hysteria"
+            echo " 2. 编辑配置文件并重启"
+            echo " 3. 重启 Hysteria 容器"
             echo " 4. 卸载 Hysteria"
             echo " 0. 返回主菜单"
             read -p "请输入选项: " choice < /dev/tty
             case "$choice" in
                 1) docker logs -f "$HYSTERIA_CONTAINER_NAME"; press_any_key;;
-                2) log INFO "显示配置文件: ${HYSTERIA_CONFIG_FILE}"; cat "${HYSTERIA_CONFIG_FILE}"; press_any_key;;
-                3) log INFO "正在重启 Hysteria..."; docker restart "$HYSTERIA_CONTAINER_NAME"; sleep 2;;
+                2) if check_editor; then "$EDITOR" "${HYSTERIA_CONFIG_FILE}"; log INFO "配置已保存。正在重启 Hysteria..."; docker restart "$HYSTERIA_CONTAINER_NAME"; sleep 2; else press_any_key; fi;;
+                3) log INFO "正在重启 Hysteria 容器..."; docker restart "$HYSTERIA_CONTAINER_NAME"; sleep 2;;
                 4)
                     read -p "确定要卸载 Hysteria 吗? (y/N): " uninstall_choice < /dev/tty
                     if [[ "$uninstall_choice" =~ ^[yY]$ ]]; then
@@ -286,19 +303,19 @@ clear_all_logs() {
 }
 
 restart_all_services() {
-    log INFO "正在重启所有正在运行的服务..."
+    log INFO "正在重启所有正在运行的容器..."
     local restarted=0
     for container in "$CADDY_CONTAINER_NAME" "$WARP_CONTAINER_NAME" "$HYSTERIA_CONTAINER_NAME"; do
-        if container_exists "$container" && [ "$(docker inspect -f '{{.State.Running}}' "$container")" = "true" ]; then
+        if container_exists "$container" && [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" = "true" ]; then
             log INFO "正在重启 ${container}..."
             docker restart "$container" &>/dev/null
             restarted=$((restarted + 1))
         fi
     done
     if [ "$restarted" -eq 0 ]; then
-        log WARN "没有正在运行的服务可供重启。"
+        log WARN "没有正在运行的容器可供重启。"
     else
-        log INFO "所有正在运行的服务已重启。"
+        log INFO "所有正在运行的容器已重启。"
     fi
 }
 
@@ -323,7 +340,7 @@ start_menu() {
     while true; do
         check_all_status
         clear
-        echo -e "\n${FontColor_Purple}Caddy + WARP + Hysteria 终极管理脚本${FontColor_Suffix} (v5.0)"
+        echo -e "\n${FontColor_Purple}Caddy + WARP + Hysteria 终极管理脚本${FontColor_Suffix} (v5.1.0)"
         echo -e "  快捷命令: ${FontColor_Yellow}hwc${FontColor_Suffix}"
         echo -e " --------------------------------------------------"
         echo -e "  Caddy 服务      : ${caddy_manager_status}"
@@ -334,7 +351,7 @@ start_menu() {
         echo -e " ${FontColor_Green}2.${FontColor_Suffix} 管理 WARP..."
         echo -e " ${FontColor_Green}3.${FontColor_Suffix} 管理 Hysteria...\n"
         echo -e " ${FontColor_Yellow}4.${FontColor_Suffix} 清除所有服务日志"
-        echo -e " ${FontColor_Yellow}5.${FontColor_Suffix} 重启所有运行中的服务\n"
+        echo -e " ${FontColor_Yellow}5.${FontColor_Suffix} 重启所有运行中的容器\n"
         echo -e " ${FontColor_Yellow}0.${FontColor_Suffix} 退出脚本\n"
         read -p " 请输入选项 [0-5]: " num < /dev/tty
         case "$num" in
