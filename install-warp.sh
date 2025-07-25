@@ -15,7 +15,7 @@ if ! command -v docker &> /dev/null; then
     exit 1
 fi
 if ! docker compose version &> /dev/null; then
-    echo -e "${YELLOW}錯誤: Docker Compose 未安裝。請先安裝 Docker Compose 再運行此腳本。${NC}"
+    echo -e "${YELLOW}錯誤: Docker Compose 未安裝。請先安裝 Docker Compose 再運行此腳cript。${NC}"
     exit 1
 fi
 
@@ -29,13 +29,13 @@ mkdir -p "$PROJECT_DIR"
 cd "$PROJECT_DIR"
 echo "完成。當前目錄: $(pwd)"
 
-# 2. 生成 Dockerfile (確保 EXPOSE 行沒有行內註釋，以避免 Dockerfile 解析錯誤)
+# 2. 生成 Dockerfile (已添加 procps 包)
 echo -e "\n${YELLOW}[2/6] 生成 Dockerfile...${NC}"
 cat <<'EOF' > Dockerfile
 FROM debian:stable-slim
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
-    apt-get install -y curl gnupg ca-certificates lsb-release && \
+    apt-get install -y curl gnupg ca-certificates lsb-release procps && \
     curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg && \
     echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/cloudflare-client.list && \
     apt-get update && \
@@ -51,7 +51,7 @@ EOF
 echo "Dockerfile 已創建。"
 echo -e "${YELLOW}注意: Dockerfile 中的 EXPOSE 指令已設定為 40000 端口，這是 WARP 代理模式的預設端口。${NC}"
 
-# 3. 生成啟動腳本 entrypoint.sh (已根據您的參考代碼進行增強)
+# 3. 生成啟動腳本 entrypoint.sh
 echo -e "\n${YELLOW}[3/6] 生成 entrypoint.sh 啟動腳本...${NC}"
 cat <<'EOF' > entrypoint.sh
 #!/bin/bash
@@ -174,7 +174,7 @@ EOF
 chmod +x entrypoint.sh
 echo "entrypoint.sh 已創建並設為可執行。"
 
-# 4. 生成 docker-compose.yml 文件 (新增 FAMILIES_MODE 環境變量選項)
+# 4. 生成 docker-compose.yml 文件
 echo -e "\n${YELLOW}[4/6] 生成 docker-compose.yml...${NC}"
 cat <<'EOF' > docker-compose.yml
 services:
@@ -205,7 +205,9 @@ echo "docker-compose.yml 已創建。"
 
 # 5. 使用 Docker Compose 構建並在後台啟動容器
 echo -e "\n${YELLOW}[5/6] 使用 Docker Compose 構建並啟動容器...${NC}"
-docker compose up -d --build
+# 注意：這裡使用 --force-recreate 可以確保即使沒有文件修改，也會重新創建容器
+# 但更重要的是，--build 會強制重建鏡像，確保 Dockerfile 的修改生效
+docker compose up -d --build --force-recreate
 
 # 6. 驗證代理服務
 echo -e "\n${YELLOW}[6/6] 驗證代理服務...${NC}"
