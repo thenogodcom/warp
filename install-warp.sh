@@ -91,7 +91,7 @@ EOF
 chmod +x entrypoint.sh
 echo "entrypoint.sh 已創建並設為可執行。"
 
-# 4. 生成 docker-compose.yml 文件 (已修正 environment 語法)
+# 4. 生成 docker-compose.yml 文件 (已修正為 mapping 語法)
 echo -e "\n${YELLOW}[4/6] 生成 docker-compose.yml...${NC}"
 cat <<'EOF' > docker-compose.yml
 services:
@@ -105,8 +105,8 @@ services:
     ports:
       - "1080:1080"
     environment:
-      - TZ=Asia/Shanghai
-      # - WARP_LICENSE_KEY=YOUR_LICENSE_KEY_HERE
+      TZ: "Asia/Shanghai"
+      # WARP_LICENSE_KEY: "YOUR_LICENSE_KEY_HERE"
     cap_add:
       - MKNOD
       - AUDIT_WRITE
