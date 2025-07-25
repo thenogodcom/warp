@@ -65,7 +65,8 @@ done
 echo "warp-svc is ready."
 
 echo "Setting WARP to SOCKS5 proxy mode on port 1080..."
-warp-cli --accept-tos set-mode proxy --proxy-port 1080
+warp-cli --accept-tos mode proxy
+warp-cli --accept-tos settings set proxy.port=1080
 
 if [ ! -f /var/lib/cloudflare-warp/reg.json ]; then
   echo "WARP is not registered. Registering now..."
@@ -127,7 +128,7 @@ echo -e "\n${YELLOW}[6/6] 驗證代理服務...${NC}"
 echo "容器正在後台啟動，請等待約 15 秒..."
 sleep 15
 echo "正在發送測試請求到 https://cloudflare.com/cdn-cgi/trace"
-if curl --socks5-hostname 127.0.0.1:1080 --retry 3 --retry-connrefused https://cloudflare.com/cdn-cgi/trace | grep -q "warp=on"; then
+if curl --socks5-hostname 127.0.0.1:1080 --retry 3 --retry-connrefused --connect-timeout 5 https://cloudflare.com/cdn-cgi/trace | grep -q "warp=on"; then
     echo -e "\n${GREEN}=== 部署成功！ ==="
     echo -e "WARP SOCKS5 代理正在運行於: 127.0.0.1:1080${NC}"
     echo "你可以通過以下命令查看日誌: cd ${PROJECT_DIR} && docker compose logs -f"
