@@ -50,14 +50,20 @@ ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 EOF
 echo "Dockerfile 已創建。"
 
-# 3. 生成啟動腳本 entrypoint.sh (已修正端口設置命令)
+# 3. 生成啟動腳本 entrypoint.sh (使用穩健的 socket 等待機制)
 echo -e "\n${YELLOW}[3/6] 生成 entrypoint.sh 啟動腳本...${NC}"
 cat <<'EOF' > entrypoint.sh
 #!/bin/bash
 set -e
 echo "Starting WARP entrypoint script..."
 /usr/bin/warp-svc &
-sleep "${WARP_SLEEP:-5}"
+
+# 使用更可靠的方法等待 warp-svc 準備就緒
+echo "Waiting for warp-svc to be ready..."
+while [ ! -S /run/cloudflare-warp/warp_service ]; do
+  sleep 1
+done
+echo "warp-svc is ready."
 
 echo "Setting WARP to SOCKS5 proxy mode on port 1080..."
 warp-cli --accept-tos mode proxy
@@ -100,7 +106,6 @@ services:
     ports:
       - "1080:1080"
     environment:
-      - WARP_SLEEP=5
       # - WARP_LICENSE_KEY=YOUR_LICENSE_KEY_HERE
     cap_add:
       - MKNOD
@@ -123,7 +128,6 @@ echo -e "\n${YELLOW}[6/6] 驗證代理服務...${NC}"
 echo "容器正在後台啟動，請等待約 15 秒..."
 sleep 15
 echo "正在發送測試請求到 https://cloudflare.com/cdn-cgi/trace"
-# 增加 --retry 和 --retry-connrefused 參數以提高驗證的穩定性
 if curl --socks5-hostname 127.0.0.1:1080 --retry 3 --retry-connrefused https://cloudflare.com/cdn-cgi/trace | grep -q "warp=on"; then
     echo -e "\n${GREEN}=== 部署成功！ ==="
     echo -e "WARP SOCKS5 代理正在運行於: 127.0.0.1:1080${NC}"
