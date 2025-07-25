@@ -14,6 +14,8 @@ if ! command -v docker &> /dev/null; then
     echo -e "${YELLOW}錯誤: Docker 未安裝。請先安裝 Docker 再運行此腳本。${NC}"
     exit 1
 fi
+
+# 使用新的檢測方式，檢查 docker compose (V2)
 if ! docker compose version &> /dev/null; then
     echo -e "${YELLOW}錯誤: Docker Compose 未安裝。請先安裝 Docker Compose 再運行此腳本。${NC}"
     exit 1
@@ -120,6 +122,7 @@ echo "docker-compose.yml 已創建。"
 
 # 5. 構建並在後台啟動容器
 echo -e "\n${YELLOW}[5/6] 使用 Docker Compose 構建並啟動容器...${NC}"
+# *** 這裡已經被修正為 docker compose (帶空格) ***
 docker compose up -d --build
 
 # 6. 驗證結果
@@ -130,10 +133,11 @@ echo "正在發送測試請求到 https://cloudflare.com/cdn-cgi/trace"
 if curl --socks5-hostname 127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace | grep -q "warp=on"; then
     echo -e "\n${GREEN}=== 部署成功！ ==="
     echo -e "WARP SOCKS5 代理正在運行於: 127.0.0.1:1080${NC}"
-    echo "你可以通過以下命令查看日誌: cd ${PROJECT_DIR} && docker-compose logs -f"
-    echo "停止服務請運行: cd ${PROJECT_DIR} && docker-compose down"
+    # *** 這裡的提示信息也已經被修正 ***
+    echo "你可以通過以下命令查看日誌: cd ${PROJECT_DIR} && docker compose logs -f"
+    echo "停止服務請運行: cd ${PROJECT_DIR} && docker compose down"
 else
     echo -e "\n${YELLOW}=== 部署可能失敗 ===${NC}"
     echo "未能從驗證信息中檢測到 'warp=on'。"
-    echo "請手動檢查容器日誌: cd ${PROJECT_DIR} && docker-compose logs -f"
+    echo "請手動檢查容器日誌: cd ${PROJECT_DIR} && docker compose logs -f"
 fi
