@@ -14,7 +14,7 @@ if ! command -v docker &> /dev/null; then
     echo -e "${YELLOW}錯誤: Docker 未安裝。請先安裝 Docker 再運行此腳本。${NC}"
     exit 1
 fi
-if ! command -v docker-compose &> /dev/null; then
+if ! docker compose version &> /dev/null; then
     echo -e "${YELLOW}錯誤: Docker Compose 未安裝。請先安裝 Docker Compose 再運行此腳本。${NC}"
     exit 1
 fi
