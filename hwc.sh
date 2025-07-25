@@ -2,33 +2,37 @@
 #
 # Description: Ultimate All-in-One Manager for Caddy, WARP & Hysteria with self-installing shortcut.
 # Author: Your Name (Inspired by P3TERX)
-# Version: 4.5.3-final-hotfix
+# Version: 4.5.4-final-structured
 
-# --- Color Definitions & Log Function ---
+# --- Section 1: Global Configurations & Definitions ---
+
+# Color Definitions & Log Function
 FontColor_Red="\033[31m"; FontColor_Green="\033[32m"; FontColor_Yellow="\033[33m"
 FontColor_Purple="\033[35m"; FontColor_Suffix="\033[0m"
 log() { local LEVEL="$1"; local MSG="$2"; case "${LEVEL}" in INFO) local LEVEL="[${FontColor_Green}${LEVEL}${FontColor_Suffix}]";; WARN) local LEVEL="[${FontColor_Yellow}${LEVEL}${FontColor_Suffix}]";; ERROR) local LEVEL="[${FontColor_Red}${LEVEL}${FontColor_Suffix}]";; esac; echo -e "${LEVEL} ${MSG}"; }
 
-# --- Global Configuration ---
+# Global Variables
 CADDY_CONTAINER_NAME="caddy-manager"
 CADDY_IMAGE_NAME="caddy:latest"
 CADDY_CONFIG_DIR="$(pwd)/caddy"
 CADDY_CONFIG_FILE="${CADDY_CONFIG_DIR}/Caddyfile"
 CADDY_DATA_VOLUME="caddy_data"
+
 WARP_CONTAINER_NAME="warp-docker"
 WARP_IMAGE_NAME="caomingjun/warp"
 WARP_VOLUME_PATH="$(pwd)/warp-data"
+
 HYSTERIA_CONTAINER_NAME="hysteria-server"
 HYSTERIA_IMAGE_NAME="tobyxdd/hysteria:v2.6.2"
 HYSTERIA_CONFIG_DIR="$(pwd)/hysteria"
 HYSTERIA_CONFIG_FILE="${HYSTERIA_CONFIG_DIR}/config.yaml"
-SHARED_NETWORK_NAME="proxy-net"
 
-# --- Self-installing Shortcut Configuration ---
+SHARED_NETWORK_NAME="proxy-net"
 SCRIPT_URL="https://raw.githubusercontent.com/thenogodcom/warp/main/hwc.sh"
 SHORTCUT_PATH="/usr/local/bin/hwc"
 
-# --- Script Self-Management ---
+# --- Section 2: All Function Definitions ---
+
 self_install() {
     local running_script_path
     if [[ -f "$0" ]]; then running_script_path=$(readlink -f "$0"); fi
@@ -45,22 +49,20 @@ self_install() {
     fi
 }
 
-# --- Prerequisite Checks ---
 check_root() { if [ "$EUID" -ne 0 ]; then log ERROR "This script must be run as root. Please use 'sudo'."; exit 1; fi; }
 check_docker() { if ! [ -x "$(command -v docker)" ]; then log ERROR "Docker is not installed."; exit 1; fi; if ! docker info >/dev/null 2>&1; then log ERROR "Docker service is not running."; exit 1; fi; }
 check_editor() { for editor in nano vi vim; do if command -v $editor &>/dev/null; then EDITOR=$editor; return 0; fi; done; log ERROR "No suitable text editor (nano, vi, vim) found."; return 1; }
 
-# --- Helper Functions ---
 container_exists() { docker ps -a --format '{{.Names}}' | grep -q "^${1}$"; }
 press_any_key() { echo ""; read -p "Press Enter to return to the main menu..." < /dev/tty; }
 
-# --- Configuration Generators ---
 generate_caddy_config() { mkdir -p "${CADDY_CONFIG_DIR}"; cat > "${CADDY_CONFIG_FILE}" << EOF
 ${1} {
     respond "Service is running." 200
 }
 EOF
 log INFO "Caddyfile created for domain ${1}"; }
+
 generate_hysteria_config() { local domain="$1" password="$2" log_mode="$3"; mkdir -p "${HYSTERIA_CONFIG_DIR}"; local log_level="error"; if [[ "$log_mode" =~ ^[yY]$ ]]; then log_level="info"; fi; cat > "${HYSTERIA_CONFIG_FILE}" << EOF
 listen: :443
 logLevel: ${log_level}
@@ -76,32 +78,138 @@ outbound:
 EOF
 log INFO "Hysteria config.yaml created with log level '${log_level}'.";}
 
-# --- Core Management Functions ---
 install_proxy_core() {
-    # ... code is identical ...
+    if container_exists "$WARP_CONTAINER_NAME" || container_exists "$HYSTERIA_CONTAINER_NAME"; then
+        log WARN "Proxy Core (WARP/Hysteria) seems to be installed."
+        read -p "Do you want to reinstall them? (y/N): " choice < /dev/tty
+        if [[ "$choice" =~ ^[yY]$ ]]; then
+            docker stop "$WARP_CONTAINER_NAME" "$HYSTERIA_CONTAINER_NAME" &>/dev/null; docker rm "$WARP_CONTAINER_NAME" "$HYSTERIA_CONTAINER_NAME" &>/dev/null
+            log INFO "Old Proxy Core containers removed."
+        else
+            log INFO "Reinstallation cancelled."; return
+        fi
+    fi
+    if ! container_exists "$CADDY_CONTAINER_NAME"; then
+        log WARN "Caddy is not installed. Auto-SSL for Hysteria will not work."
+        read -p "Continue anyway? (y/N): " choice < /dev/tty
+        [[ ! "$choice" =~ ^[yY]$ ]] && { log INFO "Installation cancelled."; return; }
+    fi
+    log INFO "--- Configuring Proxy Core ---"
+    read -p "Enable detailed logging? (Default: No) (y/N): " LOG_MODE < /dev/tty
+    read -p "Enter your public domain name: " DOMAIN < /dev/tty
+    read -p "Set a password for Hysteria: " PASSWORD < /dev/tty
+    read -p "Enter WARP+ License Key (Optional): " WARP_LICENSE_KEY < /dev/tty
+    if [ -z "$DOMAIN" ] || [ -z "$PASSWORD" ]; then log ERROR "Domain and password are required."; return; fi
+    log INFO "--- Starting Deployment ---"
+    docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
+    generate_hysteria_config "$DOMAIN" "$PASSWORD" "$LOG_MODE"
+    local warp_gost_args="-L :1080"; if [[ ! "$LOG_MODE" =~ ^[yY]$ ]]; then warp_gost_args="-L :1080 --log.level=error"; fi
+    log INFO "[1/2] Deploying WARP container..."
+    WARP_CMD=(docker run -d --name "${WARP_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${WARP_VOLUME_PATH}:/var/lib/cloudflare-warp" -e "GOST_ARGS=${warp_gost_args}" -e "WARP_LICENSE_KEY=${WARP_LICENSE_KEY}" --cap-add=MKNOD --cap-add=AUDIT_WRITE --cap-add=NET_ADMIN --device-cgroup-rule='c 10:200 rwm' --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv4.conf.all.src_valid_mark=1 "${WARP_IMAGE_NAME}")
+    if ! "${WARP_CMD[@]}"; then log ERROR "Failed to deploy WARP."; return; fi
+    log INFO "WARP deployed."
+    log INFO "[2/2] Deploying Hysteria container..."
+    HY_CMD=(docker run -d --name "${HYSTERIA_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" --memory=256m -v "${HYSTERIA_CONFIG_FILE}:/config.yaml:ro" -v "${CADDY_DATA_VOLUME}:/data:ro" -p 443:443/udp "${HYSTERIA_IMAGE_NAME}" server -c /config.yaml)
+    if ! "${HY_CMD[@]}"; then log ERROR "Failed to deploy Hysteria."; return; fi
+    log INFO "Hysteria deployed."
+    log INFO "--- Deployment Finished ---"
 }
 
 install_uninstall_caddy() {
-    # ... code is identical ...
+    if container_exists "$CADDY_CONTAINER_NAME"; then
+        log WARN "Caddy is currently installed."
+        if container_exists "$HYSTERIA_CONTAINER_NAME"; then log WARN "Hysteria depends on Caddy for SSL."; fi
+        read -p "Do you want to UNINSTALL Caddy? (y/N): " choice < /dev/tty
+        if [[ "$choice" =~ ^[yY]$ ]]; then
+            docker stop "${CADDY_CONTAINER_NAME}" &>/dev/null && docker rm "${CADDY_CONTAINER_NAME}" &>/dev/null
+            read -p "Delete Caddy config and data volume? (y/N): " del_choice < /dev/tty
+            if [[ "$del_choice" =~ ^[yY]$ ]]; then rm -rf "${CADDY_CONFIG_DIR}"; docker volume rm "${CADDY_DATA_VOLUME}" &>/dev/null; log INFO "Caddy configs and data deleted."; fi
+            log INFO "Caddy uninstalled."
+        fi
+    else
+        log INFO "--- Installing Caddy Foundation ---"
+        read -p "Enter the domain Caddy will manage: " DOMAIN < /dev/tty
+        if [ -z "$DOMAIN" ]; then log ERROR "Domain name is required."; return; fi
+        generate_caddy_config "$DOMAIN"; docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
+        CADDY_CMD=(docker run -d --name "${CADDY_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -p 80:80/tcp -p 443:443/tcp -v "${CADDY_CONFIG_FILE}:/etc/caddy/Caddyfile:ro" -v "${CADDY_DATA_VOLUME}:/data" "${CADDY_IMAGE_NAME}")
+        if "${CADDY_CMD[@]}"; then log INFO "Caddy deployed. Waiting for certificate..."; else log ERROR "Failed to deploy Caddy."; fi
+    fi
 }
 
 manage_caddy() {
-    # ... code is identical ...
+    if ! container_exists "$CADDY_CONTAINER_NAME"; then log ERROR "Caddy is not installed."; sleep 2; return; fi
+    while true; do
+        clear; log INFO "--- Manage: Caddy ---"
+        echo " 1. View Logs"; echo " 2. View Caddyfile"; echo " 3. Edit Caddyfile"
+        echo " 4. Restart Caddy"; echo " 0. Back to Main Menu"
+        read -p "Select an option: " choice < /dev/tty
+        case "$choice" in
+            1) docker logs -f "$CADDY_CONTAINER_NAME"; press_any_key;;
+            2) log INFO "Displaying ${CADDY_CONFIG_FILE}:"; cat "${CADDY_CONFIG_FILE}"; press_any_key;;
+            3) if check_editor; then "$EDITOR" "${CADDY_CONFIG_FILE}"; log INFO "Config changed. Restarting..."; docker restart "$CADDY_CONTAINER_NAME"; sleep 2; else press_any_key; fi;;
+            4) log INFO "Restarting Caddy..."; docker restart "$CADDY_CONTAINER_NAME"; sleep 2;;
+            0) break;;
+            *) log ERROR "Invalid option."; sleep 1;;
+        esac
+    done
 }
 
 manage_warp() {
-    # ... code is identical ...
+    if ! container_exists "$WARP_CONTAINER_NAME"; then log ERROR "WARP is not installed."; sleep 2; return; fi
+    while true; do
+        clear; log INFO "--- Manage: WARP ---"
+        echo " 1. View Logs"; echo " 2. Check Status (Trace)"; echo " 3. Upgrade to WARP+ / Change License Key"
+        echo " 4. Restart WARP"; echo " 0. Back to Main Menu"
+        read -p "Select an option: " choice < /dev/tty
+        case "$choice" in
+            1) docker logs -f "$WARP_CONTAINER_NAME"; press_any_key;;
+            2) log INFO "Performing trace test..."; docker exec "$WARP_CONTAINER_NAME" curl -s --proxy socks5h://127.0.0.1:1080 https://www.cloudflare.com/cdn-cgi/trace; press_any_key;;
+            3) log INFO "Entering container to update license key..."
+               log WARN "Please paste the command into the shell: warp-cli --accept-tos registration license YOUR_KEY_HERE"
+               docker exec -it "$WARP_CONTAINER_NAME" /bin/bash
+               log INFO "Restarting WARP to apply changes..."; docker restart "$WARP_CONTAINER_NAME"; sleep 2; press_any_key;;
+            4) log INFO "Restarting WARP..."; docker restart "$WARP_CONTAINER_NAME"; sleep 2;;
+            0) break;;
+            *) log ERROR "Invalid option."; sleep 1;;
+        esac
+    done
 }
 
 manage_hysteria() {
-    # ... code is identical ...
+    if ! container_exists "$HYSTERIA_CONTAINER_NAME"; then log ERROR "Hysteria is not installed."; sleep 2; return; fi
+    while true; do
+        clear; log INFO "--- Manage: Hysteria ---"
+        echo " 1. View Logs"; echo " 2. View Config"; echo " 3. Edit Config"
+        echo " 4. Restart Hysteria"; echo " 0. Back to Main Menu"
+        read -p "Select an option: " choice < /dev/tty
+        case "$choice" in
+            1) docker logs -f "$HYSTERIA_CONTAINER_NAME"; press_any_key;;
+            2) log INFO "Displaying ${HYSTERIA_CONFIG_FILE}:"; cat "${HYSTERIA_CONFIG_FILE}"; press_any_key;;
+            3) if check_editor; then "$EDITOR" "${HYSTERIA_CONFIG_FILE}"; log INFO "Config changed. Restarting..."; docker restart "$HYSTERIA_CONTAINER_NAME"; sleep 2; else press_any_key; fi;;
+            4) log INFO "Restarting Hysteria..."; docker restart "$HYSTERIA_CONTAINER_NAME"; sleep 2;;
+            0) break;;
+            *) log ERROR "Invalid option."; sleep 1;;
+        esac
+    done
 }
 
 clear_all_logs() {
-    # ... code is identical ...
+    log INFO "This will truncate the internal logs of all running service containers."
+    read -p "Are you sure? (y/N): " choice < /dev/tty
+    if [[ ! "$choice" =~ ^[yY]$ ]]; then log INFO "Operation cancelled."; return; fi
+    for container in "$CADDY_CONTAINER_NAME" "$WARP_CONTAINER_NAME" "$HYSTERIA_CONTAINER_NAME"; do
+        if container_exists "$container"; then
+            log INFO "Clearing logs for ${container}..."
+            local log_path
+            log_path=$(docker inspect --format='{{.LogPath}}' "$container")
+            if [ -f "$log_path" ]; then
+                truncate -s 0 "$log_path" 2>/dev/null || { log WARN "Permission denied, trying with sudo..."; sudo truncate -s 0 "$log_path"; }
+            fi
+        fi
+    done
+    log INFO "All service logs have been cleared."
 }
 
-# --- FIX: Optimized status check with eval for global scope ---
 check_all_status() {
     for container in "$CADDY_CONTAINER_NAME" "$WARP_CONTAINER_NAME" "$HYSTERIA_CONTAINER_NAME"; do
         local var_name="${container//-/_}_status"
@@ -119,13 +227,11 @@ check_all_status() {
     done
 }
 
-
-# --- Main Menu ---
 start_menu() {
     while true; do
         check_all_status
         clear
-        echo -e "\n${FontColor_Purple}Caddy + WARP + Hysteria Ultimate Manager${FontColor_Suffix} (v4.5.3)"
+        echo -e "\n${FontColor_Purple}Caddy + WARP + Hysteria Ultimate Manager${FontColor_Suffix} (v4.5.4)"
         echo -e "  快捷命令: ${FontColor_Yellow}hwc${FontColor_Suffix}"
         echo -e " --------------------------------------------------"
         echo -e "  Caddy Service     : ${caddy_manager_status}"
@@ -153,9 +259,7 @@ start_menu() {
     done
 }
 
-# --- Script Entrypoint ---
-check_root
-self_install
+# --- Section 3: Script Entrypoint (Main Logic) ---
 
 clear
 cat <<-'EOM'
@@ -169,134 +273,7 @@ EOM
 echo -e "${FontColor_Purple}Caddy + WARP + Hysteria Ultimate All-in-One Docker Manager${FontColor_Suffix}"
 echo "----------------------------------------------------------------"
 
+check_root
+self_install
 check_docker
 start_menu
-
-# --- Function Definitions (pasted here for completeness) ---
-install_proxy_core(){
-    if container_exists "$WARP_CONTAINER_NAME" || container_exists "$HYSTERIA_CONTAINER_NAME"; then
-        log WARN "Proxy Core (WARP/Hysteria) seems to be installed."
-        read -p "Do you want to reinstall them? (This will remove existing containers) (y/N): " choice < /dev/tty
-        if [[ "$choice" =~ ^[yY]$ ]]; then
-            docker stop "$WARP_CONTAINER_NAME" "$HYSTERIA_CONTAINER_NAME" &>/dev/null
-            docker rm "$WARP_CONTAINER_NAME" "$HYSTERIA_CONTAINER_NAME" &>/dev/null
-            log INFO "Old Proxy Core containers removed."
-        else
-            log INFO "Reinstallation cancelled."; return
-        fi
-    fi
-    if ! container_exists "$CADDY_CONTAINER_NAME"; then
-        log WARN "Caddy is not installed. Auto-SSL for Hysteria will not work."
-        read -p "It is highly recommended to install Caddy first. Continue anyway? (y/N): " choice < /dev/tty
-        [[ ! "$choice" =~ ^[yY]$ ]] && { log INFO "Installation cancelled."; return; }
-    fi
-    log INFO "--- Configuring Proxy Core ---"
-    read -p "Enable detailed logging for debugging? (Default: No) (y/N): " LOG_MODE < /dev/tty
-    read -p "Enter your public domain name: " DOMAIN < /dev/tty
-    read -p "Set a password for Hysteria: " PASSWORD < /dev/tty
-    read -p "Enter WARP+ License Key (Optional, press Enter to skip): " WARP_LICENSE_KEY < /dev/tty
-    if [ -z "$DOMAIN" ] || [ -z "$PASSWORD" ]; then log ERROR "Domain and password are required."; return; fi
-    log INFO "--- Starting Deployment ---"
-    docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
-    generate_hysteria_config "$DOMAIN" "$PASSWORD" "$LOG_MODE"
-    local warp_gost_args="-L :1080"; if [[ ! "$LOG_MODE" =~ ^[yY]$ ]]; then warp_gost_args="-L :1080 --log.level=error"; fi
-    log INFO "[1/2] Deploying WARP container..."
-    WARP_CMD=(docker run -d --name "${WARP_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${WARP_VOLUME_PATH}:/var/lib/cloudflare-warp" -e "GOST_ARGS=${warp_gost_args}" -e "WARP_LICENSE_KEY=${WARP_LICENSE_KEY}" --cap-add=MKNOD --cap-add=AUDIT_WRITE --cap-add=NET_ADMIN --device-cgroup-rule='c 10:200 rwm' --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv4.conf.all.src_valid_mark=1 "${WARP_IMAGE_NAME}")
-    if ! "${WARP_CMD[@]}"; then log ERROR "Failed to deploy WARP."; return; fi
-    log INFO "WARP deployed."
-    log INFO "[2/2] Deploying Hysteria container..."
-    HY_CMD=(docker run -d --name "${HYSTERIA_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" --memory=256m -v "${HYSTERIA_CONFIG_FILE}:/config.yaml:ro" -v "${CADDY_DATA_VOLUME}:/data:ro" -p 443:443/udp "${HYSTERIA_IMAGE_NAME}" server -c /config.yaml)
-    if ! "${HY_CMD[@]}"; then log ERROR "Failed to deploy Hysteria."; return; fi
-    log INFO "Hysteria deployed."
-    log INFO "--- Deployment Finished ---"
-}
-install_uninstall_caddy(){
-    if container_exists "$CADDY_CONTAINER_NAME"; then
-        log WARN "Caddy is currently installed."
-        if container_exists "$HYSTERIA_CONTAINER_NAME"; then log WARN "Hysteria depends on Caddy for SSL."; fi
-        read -p "Do you want to UNINSTALL Caddy? (y/N): " choice < /dev/tty
-        if [[ "$choice" =~ ^[yY]$ ]]; then
-            docker stop "${CADDY_CONTAINER_NAME}" &>/dev/null && docker rm "${CADDY_CONTAINER_NAME}" &>/dev/null
-            read -p "Delete Caddy config and data volume? (y/N): " del_choice < /dev/tty
-            if [[ "$del_choice" =~ ^[yY]$ ]]; then rm -rf "${CADDY_CONFIG_DIR}"; docker volume rm "${CADDY_DATA_VOLUME}" &>/dev/null; log INFO "Caddy configs and data deleted."; fi
-            log INFO "Caddy uninstalled."
-        fi
-    else
-        log INFO "--- Installing Caddy Foundation ---"
-        read -p "Enter the domain Caddy will manage: " DOMAIN < /dev/tty
-        if [ -z "$DOMAIN" ]; then log ERROR "Domain name is required."; return; fi
-        generate_caddy_config "$DOMAIN"; docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
-        CADDY_CMD=(docker run -d --name "${CADDY_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -p 80:80/tcp -p 443:443/tcp -v "${CADDY_CONFIG_FILE}:/etc/caddy/Caddyfile:ro" -v "${CADDY_DATA_VOLUME}:/data" "${CADDY_IMAGE_NAME}")
-        if "${CADDY_CMD[@]}"; then log INFO "Caddy deployed. Waiting for certificate..."; else log ERROR "Failed to deploy Caddy."; fi
-    fi
-}
-manage_caddy(){
-    if ! container_exists "$CADDY_CONTAINER_NAME"; then log ERROR "Caddy is not installed."; sleep 2; return; fi
-    while true; do
-        clear; log INFO "--- Manage: Caddy ---"
-        echo " 1. View Logs"; echo " 2. View Caddyfile"; echo " 3. Edit Caddyfile"
-        echo " 4. Restart Caddy"; echo " 0. Back to Main Menu"
-        read -p "Select an option: " choice < /dev/tty
-        case "$choice" in
-            1) docker logs -f "$CADDY_CONTAINER_NAME"; press_any_key;;
-            2) log INFO "Displaying ${CADDY_CONFIG_FILE}:"; cat "${CADDY_CONFIG_FILE}"; press_any_key;;
-            3) if check_editor; then "$EDITOR" "${CADDY_CONFIG_FILE}"; log INFO "Config changed. Restarting..."; docker restart "$CADDY_CONTAINER_NAME"; sleep 2; else press_any_key; fi;;
-            4) log INFO "Restarting Caddy..."; docker restart "$CADDY_CONTAINER_NAME"; sleep 2;;
-            0) break;;
-            *) log ERROR "Invalid option."; sleep 1;;
-        esac
-    done
-}
-manage_warp(){
-    if ! container_exists "$WARP_CONTAINER_NAME"; then log ERROR "WARP is not installed."; sleep 2; return; fi
-    while true; do
-        clear; log INFO "--- Manage: WARP ---"
-        echo " 1. View Logs"; echo " 2. Check Status (Trace)"; echo " 3. Upgrade to WARP+ / Change License Key"
-        echo " 4. Restart WARP"; echo " 0. Back to Main Menu"
-        read -p "Select an option: " choice < /dev/tty
-        case "$choice" in
-            1) docker logs -f "$WARP_CONTAINER_NAME"; press_any_key;;
-            2) log INFO "Performing trace test..."; docker exec "$WARP_CONTAINER_NAME" curl -s --proxy socks5h://127.0.0.1:1080 https://www.cloudflare.com/cdn-cgi/trace; press_any_key;;
-            3) log INFO "Entering container to update license key..."
-               log WARN "Please paste the command into the shell: warp-cli --accept-tos registration license YOUR_KEY_HERE"
-               docker exec -it "$WARP_CONTAINER_NAME" /bin/bash
-               log INFO "Restarting WARP to apply changes..."; docker restart "$WARP_CONTAINER_NAME"; sleep 2; press_any_key;;
-            4) log INFO "Restarting WARP..."; docker restart "$WARP_CONTAINER_NAME"; sleep 2;;
-            0) break;;
-            *) log ERROR "Invalid option."; sleep 1;;
-        esac
-    done
-}
-manage_hysteria(){
-    if ! container_exists "$HYSTERIA_CONTAINER_NAME"; then log ERROR "Hysteria is not installed."; sleep 2; return; fi
-    while true; do
-        clear; log INFO "--- Manage: Hysteria ---"
-        echo " 1. View Logs"; echo " 2. View Config"; echo " 3. Edit Config"
-        echo " 4. Restart Hysteria"; echo " 0. Back to Main Menu"
-        read -p "Select an option: " choice < /dev/tty
-        case "$choice" in
-            1) docker logs -f "$HYSTERIA_CONTAINER_NAME"; press_any_key;;
-            2) log INFO "Displaying ${HYSTERIA_CONFIG_FILE}:"; cat "${HYSTERIA_CONFIG_FILE}"; press_any_key;;
-            3) if check_editor; then "$EDITOR" "${HYSTERIA_CONFIG_FILE}"; log INFO "Config changed. Restarting..."; docker restart "$HYSTERIA_CONTAINER_NAME"; sleep 2; else press_any_key; fi;;
-            4) log INFO "Restarting Hysteria..."; docker restart "$HYSTERIA_CONTAINER_NAME"; sleep 2;;
-            0) break;;
-            *) log ERROR "Invalid option."; sleep 1;;
-        esac
-    done
-}
-clear_all_logs(){
-    log INFO "This will truncate the internal logs of all running service containers."
-    read -p "Are you sure? (y/N): " choice < /dev/tty
-    if [[ ! "$choice" =~ ^[yY]$ ]]; then log INFO "Operation cancelled."; return; fi
-    for container in "$CADDY_CONTAINER_NAME" "$WARP_CONTAINER_NAME" "$HYSTERIA_CONTAINER_NAME"; do
-        if container_exists "$container"; then
-            log INFO "Clearing logs for ${container}..."
-            local log_path
-            log_path=$(docker inspect --format='{{.LogPath}}' "$container")
-            if [ -f "$log_path" ]; then
-                truncate -s 0 "$log_path" 2>/dev/null || { log WARN "Permission denied, trying with sudo..."; sudo truncate -s 0 "$log_path"; }
-            fi
-        fi
-    done
-    log INFO "All service logs have been cleared."
-}
