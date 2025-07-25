@@ -29,7 +29,7 @@ mkdir -p "$PROJECT_DIR"
 cd "$PROJECT_DIR"
 echo "完成。當前目錄: $(pwd)"
 
-# 2. 生成 Dockerfile
+# 2. 生成 Dockerfile (確保 EXPOSE 行沒有行內註釋，以避免 Dockerfile 解析錯誤)
 echo -e "\n${YELLOW}[2/6] 生成 Dockerfile...${NC}"
 cat <<'EOF' > Dockerfile
 FROM debian:stable-slim
@@ -45,12 +45,13 @@ RUN apt-get update && \
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 VOLUME /var/lib/cloudflare-warp
-EXPOSE 40000 # 修正：WARP 代理模式默認監聽 40000 端口
+EXPOSE 40000
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 EOF
 echo "Dockerfile 已創建。"
+echo -e "${YELLOW}注意: Dockerfile 中的 EXPOSE 指令已設定為 40000 端口，這是 WARP 代理模式的預設端口。${NC}"
 
-# 3. 生成啟動腳本 entrypoint.sh（修正端口設定）
+# 3. 生成啟動腳本 entrypoint.sh (已根據您的參考代碼進行增強)
 echo -e "\n${YELLOW}[3/6] 生成 entrypoint.sh 啟動腳本...${NC}"
 cat <<'EOF' > entrypoint.sh
 #!/bin/bash
@@ -60,61 +61,120 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-echo -e "${GREEN}▶ 啟動 warp-svc...${NC}"
-/usr/bin/warp-svc &
+echo -e "${YELLOW}殺死任何現有的 warp-svc 進程 (如果存在)...${NC}"
+if pkill -x warp-svc -9; then
+  echo -e "${GREEN}✔ 已殺死現有 warp-svc 進程。${NC}"
+else
+  echo -e "${YELLOW}ℹ 未發現現有 warp-svc 進程。${NC}"
+fi
 
-# 等待 warp-svc IPC socket 就緒
-echo -e "${YELLOW}⌛ 等待 warp-svc 初始化...${NC}"
-for i in {1..20}; do
-  if [ -S /run/cloudflare-warp/warp_service ]; then
-    if warp-cli --accept-tos status &>/dev/null; then
-      echo -e "${GREEN}✔ warp-svc 已就緒。${NC}"
-      break
+echo -e "${GREEN}▶ 啟動 warp-svc 後台服務...${NC}"
+# 啟動 warp-svc 並過濾掉 dbus 相關日誌，使其輸出更清晰
+/usr/bin/warp-svc > >(grep -iv dbus) 2> >(grep -iv dbus >&2) &
+WARP_PID=$! # 獲取 warp-svc 進程 ID
+
+# 設置信號捕獲，用於容器優雅關閉時停止 warp-svc
+trap "echo -e '\n${YELLOW}捕獲到停止信號 (SIGTERM/SIGINT)，正在優雅關閉 warp-svc...${NC}'; kill -TERM $WARP_PID; exit" SIGTERM SIGINT
+
+# --- 嘗試註冊 WARP 服務 ---
+MAX_ATTEMPTS=20 # 增加嘗試次數以確保服務有足夠時間啟動
+attempt_counter=0
+
+echo -e "${YELLOW}⌛ 嘗試啟動 warp-svc 並進行註冊...${NC}"
+
+# 函數：檢查服務狀態並嘗試註冊
+function attempt_registration {
+  until warp-cli --accept-tos registration new &> /dev/null; do
+    echo -e "${YELLOW}等待 warp-svc 初始化並可註冊... 嘗試 $((++attempt_counter)) 之 $MAX_ATTEMPTS${NC}"
+    sleep 1
+    if [[ $attempt_counter -ge $MAX_ATTEMPTS ]]; then
+      echo -e "${YELLOW}❌ 經過 $MAX_ATTEMPTS 次嘗試後，未能成功註冊 WARP 服務。${NC}"
+      return 1 # 返回失敗狀態
     fi
+  done
+  echo -e "${GREEN}✔ warp-svc 已成功啟動並完成註冊！${NC}"
+}
+
+# 調用註冊函數，如果失敗則退出
+if ! attempt_registration; then
+  echo -e "${YELLOW}❌ 啟動服務或註冊 WARP 時出現嚴重問題。請檢查容器日誌獲取詳細信息。${NC}"
+  kill $WARP_PID # 殺死 warp-svc 進程
+  exit 1 # 退出容器
+fi
+
+# --- 配置 WARP 服務 ---
+echo -e "${YELLOW}🛠 設定 WARP 代理模式及相關配置...${NC}"
+
+# 設定 SOCKS5 代理端口 (warp-cli proxy 模式默認監聽 40000 端口，此為顯式設置)
+warp-cli --accept-tos proxy port 40000
+echo -e "${GREEN}✔ 代理端口設定為 40000。${NC}"
+
+# 設定為 SOCKS5 代理模式
+warp-cli --accept-tos set-mode proxy
+echo -e "${GREEN}✔ 設定為 SOCKS5 代理模式。${NC}"
+
+# 禁用 DNS 日誌，以保護隱私或減少日誌量
+warp-cli --accept-tos dns log disable
+echo -e "${GREEN}✔ DNS 日誌已禁用。${NC}"
+
+# 設定 DNS Families 模式 (例如: ipv4, ipv6, auto)
+# 默認為 'auto'，可通過環境變數 FAMILIES_MODE 設置
+FAMILIES_MODE_DEFAULT="auto"
+if [[ -z "$FAMILIES_MODE" ]]; then
+  echo -e "${YELLOW}⚠ 環境變數 FAMILIES_MODE 未設置，將使用默認值: ${FAMILIES_MODE_DEFAULT}${NC}"
+  FAMILIES_MODE="${FAMILIES_MODE_DEFAULT}"
+fi
+warp-cli --accept-tos dns families "${FAMILIES_MODE}"
+echo -e "${GREEN}✔ DNS Families 模式設定為: ${FAMILIES_MODE}${NC}"
+
+
+# 套用 WARP+ License（可選）
+if [[ -n "$WARP_LICENSE_KEY" ]]; then # 使用 WARP_LICENSE_KEY 與 docker-compose.yml 保持一致
+  echo -e "${YELLOW}🔑 正在套用 WARP+ 授權碼...${NC}"
+  # 注意：即使授權碼無效，此命令也可能不會立即返回非零狀態，後續狀態檢查更重要
+  warp-cli --accept-tos registration license "$WARP_LICENSE_KEY" || echo -e "${YELLOW}警告: 授權碼可能無效、已使用或存在其他問題。${NC}"
+else
+  echo -e "${YELLOW}ℹ 未提供 WARP_LICENSE_KEY，將使用免費 WARP 服務。${NC}"
+fi
+
+# --- 連接 WARP 服務 ---
+echo -e "${YELLOW}🌐 嘗試連線 WARP 服務...${NC}"
+warp-cli --accept-tos connect
+
+# 循環檢查連接狀態，直到連接成功，或達到最大嘗試次數
+MAX_CONNECT_ATTEMPTS=60 # 給予足夠時間嘗試連接 (60 秒)
+connect_attempt_counter=0
+while true; do
+  if warp-cli --accept-tos status | grep -iq connected; then
+    echo -e "${GREEN}✔ WARP 已成功連線！${NC}"
+    break # 連接成功，退出循環
+  else
+    echo -e "${YELLOW}WARP 仍在嘗試連接中... 嘗試 $((++connect_attempt_counter)) 之 $MAX_CONNECT_ATTEMPTS${NC}"
+    if [[ $connect_attempt_counter -ge $MAX_CONNECT_ATTEMPTS ]]; then
+        echo -e "${YELLOW}❌ 經過 $MAX_CONNECT_ATTEMPTS 次嘗試後，未能成功連線 WARP。${NC}"
+        warp-cli --accept-tos status # 顯示最終狀態，方便排查問題
+        kill $WARP_PID # 殺死 warp-svc 進程
+        exit 1 # 退出容器
+    fi
+    sleep 1 # 等待一秒後再次檢查
   fi
-  echo -n "."
-  sleep 1
 done
 
-# 若未註冊則新註冊
-if ! warp-cli --accept-tos registration info &>/dev/null; then
-  echo -e "${YELLOW}➕ 尚未註冊，開始新註冊...${NC}"
-  warp-cli --accept-tos register # P3TERX 腳本中使用 register，雖然 new 也有效，但為了一致性
-  echo -e "${GREEN}✔ 註冊完成。${NC}"
-else
-  echo -e "${GREEN}✔ 已存在註冊信息。${NC}"
-fi
+# --- 顯示最終 WARP 狀態 ---
+echo -e "\n${GREEN}=== 最終 WARP 服務狀態 ===${NC}"
+warp-cli --accept-tos status || true # 顯示當前 WARP 連接狀態
+warp-cli --accept-tos registration info || true # 顯示註冊信息（包括是否為 WARP+）
 
-# 套用 License（可選）
-if [ -n "$WARP_LICENSE_KEY" ]; then
-  echo -e "${YELLOW}🔑 套用 WARP+ 授權碼...${NC}"
-  warp-cli --accept-tos registration license "$WARP_LICENSE_KEY" || echo -e "${YELLOW}警告: 授權碼可能已無效。${NC}"
-fi
+echo -e "${GREEN}✅ WARP SOCKS5 代理已成功啟動並運行在主機的 40000 端口。${NC}"
+echo -e "${GREEN}容器將保持運行以持續提供 WARP 代理服務。${NC}"
 
-# 設定為 SOCKS5 模式並啟用（默認端口為 40000）
-echo -e "${YELLOW}🛠 設定為 SOCKS5 模式，監聽 40000 端口 (WARP 預設)...${NC}"
-warp-cli --accept-tos set-mode proxy # P3TERX 腳本中使用 set-mode proxy，而非 mode proxy
-# 移除錯誤的 `settings set proxy-port` 命令，因為 warp-cli proxy 模式默認就是 40000 端口
-# warp-cli --accept-tos settings set proxy-port 1080 # REMOVED: This command is incorrect.
-
-# 開始連線
-echo -e "${YELLOW}🌐 嘗試連線 WARP...${NC}"
-warp-cli --accept-tos connect || echo -e "${YELLOW}⚠ 嘗試連線失敗，可能已連線或無效。${NC}"
-
-# 顯示最終狀態
-echo -e "${GREEN}=== 最終狀態 ===${NC}"
-warp-cli --accept-tos status || true
-warp-cli --accept-tos registration info || true
-
-echo -e "${GREEN}✅ WARP SOCKS5 代理啟動成功，正在監聽 40000 端口。${NC}"
-
-# 保持容器常駐
-tail -f /dev/null
+# 等待 warp-svc 進程結束，以確保容器保持活躍，直到 warp-svc 停止
+wait $WARP_PID
 EOF
 chmod +x entrypoint.sh
 echo "entrypoint.sh 已創建並設為可執行。"
 
-# 4. 生成 docker-compose.yml 文件
+# 4. 生成 docker-compose.yml 文件 (新增 FAMILIES_MODE 環境變量選項)
 echo -e "\n${YELLOW}[4/6] 生成 docker-compose.yml...${NC}"
 cat <<'EOF' > docker-compose.yml
 services:
@@ -126,38 +186,44 @@ services:
     device_cgroup_rules:
       - 'c 10:200 rwm'
     ports:
-      - "40000:40000" # 修正：映射容器內的 40000 端口到主機的 40000 端口
+      - "40000:40000" # 映射容器內部的 40000 端口到主機的 40000 端口
     environment:
-      TZ: "Asia/Shanghai"
-      # WARP_LICENSE_KEY: "YOUR_LICENSE_KEY_HERE"
+      TZ: "Asia/Shanghai" # 設定時區，可根據需要修改
+      # WARP_LICENSE_KEY: "YOUR_LICENSE_KEY_HERE" # 如果您有 WARP+ 授權碼，請在此處填寫並取消註釋
+      # FAMILIES_MODE: "auto" # 可選：設置 DNS Families 模式 (例如: ipv4, ipv6, auto)。默認為 "auto"。
     cap_add:
-      - MKNOD
-      - AUDIT_WRITE
-      - NET_ADMIN
+      - MKNOD # 允許創建特殊文件，可能對某些 VPN 隧道類型有幫助
+      - AUDIT_WRITE # 允許寫入審計日誌
+      - NET_ADMIN # 允許執行網絡管理任務，如修改路由表、設置接口等
     sysctls:
-      - net.ipv6.conf.all.disable_ipv6=0
-      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv6.conf.all.disable_ipv6=0 # 確保 IPv6 未禁用
+      - net.ipv4.conf.all.src_valid_mark=1 # 啟用防火牆標記路由
     volumes:
-      - ./data:/var/lib/cloudflare-warp
+      - ./data:/var/lib/cloudflare-warp # 將 WARP 數據持久化到主機的 ./data 目錄
 EOF
 echo "docker-compose.yml 已創建。"
 
-# 5. 構建並在後台啟動容器
+# 5. 使用 Docker Compose 構建並在後台啟動容器
 echo -e "\n${YELLOW}[5/6] 使用 Docker Compose 構建並啟動容器...${NC}"
 docker compose up -d --build
 
-# 6. 驗證結果
+# 6. 驗證代理服務
 echo -e "\n${YELLOW}[6/6] 驗證代理服務...${NC}"
-echo "容器正在後台啟動，請等待約 20 秒..." # 增加等待時間
-sleep 20
-echo "正在發送測試請求到 https://cloudflare.com/cdn-cgi/trace"
-if curl --socks5-hostname 127.0.0.1:40000 --retry 5 --retry-connrefused --connect-timeout 10 https://cloudflare.com/cdn-cgi/trace | grep -q "warp=on"; then # 修正：測試 40000 端口
-    echo -e "\n${GREEN}=== 部署成功！ ==="
-    echo -e "WARP SOCKS5 代理正在運行於: 127.0.0.1:40000${NC}" # 修正：顯示 40000 端口
-    echo "你可以通過以下命令查看日誌: cd ${PROJECT_DIR} && docker compose logs -f"
-    echo "停止服務請運行: cd ${PROJECT_DIR} && docker compose down"
-else
-    echo -e "\n${YELLOW}=== 部署可能失敗 ===${NC}"
-    echo "未能從驗證信息中檢測到 'warp=on'。"
-    echo "請手動檢查容器日誌: cd ${PROJECT_DIR} && docker compose logs -f"
-fi
+echo "容器正在後台啟動並連接 WARP，這可能需要一些時間（約 20-60 秒）..."
+sleep 20 # 初始等待時間
+for i in {1..4}; do # 再檢查 4 次，每次等待 10 秒
+    if curl --socks5-hostname 127.0.0.1:40000 --retry 5 --retry-connrefused --connect-timeout 10 https://cloudflare.com/cdn-cgi/trace | grep -q "warp=on"; then
+        echo -e "\n${GREEN}=== 部署成功！ ==="
+        echo -e "WARP SOCKS5 代理正在運行於: 127.0.0.1:40000${NC}"
+        echo "你可以通過以下命令查看容器日誌: cd ${PROJECT_DIR} && docker compose logs -f"
+        echo "停止服務請運行: cd ${PROJECT_DIR} && docker compose down"
+        exit 0
+    fi
+    echo -e "${YELLOW}驗證中... (${i}/4) 等待 10 秒後重試...${NC}"
+    sleep 10
+done
+
+echo -e "\n${YELLOW}=== 部署可能失敗 ===${NC}"
+echo "未能從驗證信息中檢測到 'warp=on'，或者服務啟動超時。"
+echo "請手動檢查容器日誌以排除故障: cd ${PROJECT_DIR} && docker compose logs -f"
+exit 1
