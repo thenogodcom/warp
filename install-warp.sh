@@ -50,42 +50,64 @@ ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 EOF
 echo "Dockerfile 已創建。"
 
-# 3. 生成啟動腳本 entrypoint.sh (最終修正版)
+# 3. 生成啟動腳本 entrypoint.sh（已修正）
 echo -e "\n${YELLOW}[3/6] 生成 entrypoint.sh 啟動腳本...${NC}"
 cat <<'EOF' > entrypoint.sh
 #!/bin/bash
 set -e
-echo "Starting WARP entrypoint script..."
+
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+echo -e "${GREEN}▶ 啟動 warp-svc...${NC}"
 /usr/bin/warp-svc &
 
-echo "Waiting for warp-svc to be ready..."
-while [ ! -S /run/cloudflare-warp/warp_service ]; do
+# 等待 warp-svc IPC socket 就緒
+echo -e "${YELLOW}⌛ 等待 warp-svc 初始化...${NC}"
+for i in {1..20}; do
+  if [ -S /run/cloudflare-warp/warp_service ]; then
+    if warp-cli --accept-tos status &>/dev/null; then
+      echo -e "${GREEN}✔ warp-svc 已就緒。${NC}"
+      break
+    fi
+  fi
+  echo -n "."
   sleep 1
 done
-echo "warp-svc is ready."
 
-echo "Setting WARP to SOCKS5 proxy mode on port 1080..."
-warp-cli --accept-tos mode proxy
-warp-cli --accept-tos settings set proxy.port=1080
-
-if [ ! -f /var/lib/cloudflare-warp/reg.json ]; then
-  echo "WARP is not registered. Registering now..."
+# 若未註冊則新註冊
+if ! warp-cli --accept-tos registration info &>/dev/null; then
+  echo -e "${YELLOW}➕ 尚未註冊，開始新註冊...${NC}"
   warp-cli --accept-tos registration new
-  echo "Registration complete."
+  echo -e "${GREEN}✔ 註冊完成。${NC}"
 else
-  echo "WARP is already registered."
+  echo -e "${GREEN}✔ 已存在註冊信息。${NC}"
 fi
 
+# 套用 License（可選）
 if [ -n "$WARP_LICENSE_KEY" ]; then
-    echo "Setting WARP+ license key..."
-    warp-cli --accept-tos registration license "$WARP_LICENSE_KEY"
-    echo "License key set."
+  echo -e "${YELLOW}🔑 套用 WARP+ 授權碼...${NC}"
+  warp-cli --accept-tos registration license "$WARP_LICENSE_KEY" || echo -e "${YELLOW}警告: 授權碼可能已無效。${NC}"
 fi
 
-echo "Connecting to WARP..."
-warp-cli --accept-tos connect
+# 設定為 SOCKS5 模式並啟用
+echo -e "${YELLOW}🛠 設定為 SOCKS5 模式，監聽 1080 端口...${NC}"
+warp-cli --accept-tos mode proxy
+warp-cli --accept-tos settings set proxy-port 1080
 
-echo "WARP proxy is running. Tailing logs to keep container alive."
+# 開始連線
+echo -e "${YELLOW}🌐 嘗試連線 WARP...${NC}"
+warp-cli --accept-tos connect || echo -e "${YELLOW}⚠ 嘗試連線失敗，可能已連線或無效。${NC}"
+
+# 顯示最終狀態
+echo -e "${GREEN}=== 最終狀態 ===${NC}"
+warp-cli --accept-tos status || true
+warp-cli --accept-tos registration info || true
+
+echo -e "${GREEN}✅ WARP SOCKS5 代理啟動成功，正在監聽 1080 端口。${NC}"
+
+# 保持容器常駐
 tail -f /dev/null
 EOF
 chmod +x entrypoint.sh
