@@ -5,7 +5,7 @@
 #	Description: WARP Docker Container One-Key Script
 #	Author: Your Name
 #	Blog: https://your.blog.com
-#	Version: 1.0.0
+#	Version: 1.1.0 (Fixed interactive issue with curl|bash)
 #=================================================
 
 # 顏色定義
@@ -49,13 +49,13 @@ install_warp() {
 
     echo -e "${GREEN}開始安裝 WARP 容器...${NC}"
 
-    # 交互式詢問配置
-    read -p "請輸入要映射到主機的 SOCKS5 代理端口 (留空默認 1080): " PROXY_PORT
+    # 交互式詢問配置 (!!!修正點: 添加 < /dev/tty)
+    read -p "請輸入要映射到主機的 SOCKS5 代理端口 (留空默認 1080): " PROXY_PORT < /dev/tty
     PROXY_PORT=${PROXY_PORT:-1080}
 
-    read -p "您是否有 WARP+ 授權碼 (License Key)? (有則輸入, 無則直接回車): " WARP_LICENSE_KEY
+    read -p "您是否有 WARP+ 授權碼 (License Key)? (有則輸入, 無則直接回車): " WARP_LICENSE_KEY < /dev/tty
 
-    read -p "是否啟用 NAT 模式 (用於旁路由等)? (y/N): " ENABLE_NAT_CHOICE
+    read -p "是否啟用 NAT 模式 (用於旁路由等)? (y/N): " ENABLE_NAT_CHOICE < /dev/tty
     
     # 準備 docker run 命令
     DOCKER_CMD="docker run -d --name ${CONTAINER_NAME} --restart always"
@@ -124,7 +124,8 @@ uninstall_warp() {
     docker rm ${CONTAINER_NAME} >/dev/null 2>&1
     echo -e "${GREEN}WARP 容器已移除。${NC}"
 
-    read -p "是否需要刪除本地的 WARP 配置數據 (位於 ${VOLUME_PATH})? (y/N): " REMOVE_DATA_CHOICE
+    # (!!!修正點: 添加 < /dev/tty)
+    read -p "是否需要刪除本地的 WARP 配置數據 (位於 ${VOLUME_PATH})? (y/N): " REMOVE_DATA_CHOICE < /dev/tty
     if [[ "$REMOVE_DATA_CHOICE" =~ ^[yY]$ ]]; then
         rm -rf ${VOLUME_PATH}
         echo -e "${GREEN}配置數據已刪除。${NC}"
@@ -148,9 +149,6 @@ update_warp() {
     docker rm ${CONTAINER_NAME}
 
     echo -e "${YELLOW}3. 正在使用原有配置重新創建容器...${NC}"
-    # 重新運行安裝流程，但這次是非交互式的，直接使用之前的配置
-    # 注意：此處簡化處理，讓用戶再次選擇。更完美的方案是保存之前的配置。
-    # 為了腳本的簡潔性，我們引導用戶重新安裝，由於數據卷是保留的，配置會被繼承。
     echo -e "${GREEN}鏡像已更新。請再次運行安裝選項來使用新鏡像創建容器。您的註冊數據將會被保留。${NC}"
     install_warp
 }
@@ -192,7 +190,8 @@ start_menu() {
     fi
     echo ""
 
-    read -p "請輸入選項 [0-4]: " num
+    # (!!!修正點: 添加 < /dev/tty)
+    read -p "請輸入選項 [0-4]: " num < /dev/tty
     case "$num" in
         1)
             install_warp
