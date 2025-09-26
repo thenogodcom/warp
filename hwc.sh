@@ -2,7 +2,7 @@
 #
 # Description: Ultimate All-in-One Manager for Caddy, WARP & Hysteria with self-installing shortcut.
 # Author: Your Name (Inspired by P-TERX)
-# Version: 5.1.3-final-cleanup
+# Version: 5.2.0
 
 # --- 第1节：全局配置与定义 ---
 FontColor_Red="\033[31m"; FontColor_Green="\033[32m"; FontColor_Yellow="\033[33m"
@@ -11,7 +11,7 @@ log() { local LEVEL="$1"; local MSG="$2"; case "${LEVEL}" in INFO) local LEVEL="
 
 CADDY_CONTAINER_NAME="caddy-manager"; CADDY_IMAGE_NAME="caddy:latest"; CADDY_CONFIG_DIR="$(pwd)/caddy"; CADDY_CONFIG_FILE="${CADDY_CONFIG_DIR}/Caddyfile"; CADDY_DATA_VOLUME="caddy_data"
 WARP_CONTAINER_NAME="warp-docker"; WARP_IMAGE_NAME="caomingjun/warp"; WARP_VOLUME_PATH="$(pwd)/warp-data"
-HYSTERIA_CONTAINER_NAME="hysteria-server"; HYSTERIA_IMAGE_NAME="tobyxdd/hysteria:v2.6.2"; HYSTERIA_CONFIG_DIR="$(pwd)/hysteria"; HYSTERIA_CONFIG_FILE="${HYSTERIA_CONFIG_DIR}/config.yaml"
+HYSTERIA_CONTAINER_NAME="hysteria-server"; HYSTERIA_IMAGE_NAME="tobyxdd/hysteria"; HYSTERIA_CONFIG_DIR="$(pwd)/hysteria"; HYSTERIA_CONFIG_FILE="${HYSTERIA_CONFIG_DIR}/config.yaml"
 SHARED_NETWORK_NAME="proxy-net"
 SCRIPT_URL="https://raw.githubusercontent.com/thenogodcom/warp/main/hwc.sh"
 SHORTCUT_PATH="/usr/local/bin/hwc"
@@ -327,7 +327,7 @@ start_menu() {
     while true; do
         check_all_status
         clear
-        echo -e "\n${FontColor_Purple}Caddy + WARP + Hysteria 终极管理脚本${FontColor_Suffix} (v5.1.2)"
+        echo -e "\n${FontColor_Purple}Caddy + WARP + Hysteria 终极管理脚本${FontColor_Suffix} (v5.2.0)"
         echo -e "  快捷命令: ${FontColor_Yellow}hwc${FontColor_Suffix}"
         echo -e " --------------------------------------------------"
         echo -e "  Caddy 服务      : ${caddy_manager_status}"
