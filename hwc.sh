@@ -10,7 +10,7 @@ FontColor_Purple="\033[35m"; FontColor_Suffix="\033[0m"
 log() { local LEVEL="$1"; local MSG="$2"; case "${LEVEL}" in INFO) local LEVEL="[${FontColor_Green}信息${FontColor_Suffix}]";; WARN) local LEVEL="[${FontColor_Yellow}警告${FontColor_Suffix}]";; ERROR) local LEVEL="[${FontColor_Red}错误${FontColor_Suffix}]";; esac; echo -e "${LEVEL} ${MSG}"; }
 
 CADDY_CONTAINER_NAME="caddy-manager"; CADDY_IMAGE_NAME="caddy:latest"; CADDY_CONFIG_DIR="$(pwd)/caddy"; CADDY_CONFIG_FILE="${CADDY_CONFIG_DIR}/Caddyfile"; CADDY_DATA_VOLUME="caddy_data"
-WARP_CONTAINER_NAME="warp-docker"; WARP_IMAGE_NAME="ghcr.io/mon-ius/docker-warp-socks:latest"; WARP_VOLUME_PATH="$(pwd)/warp-data"
+WARP_CONTAINER_NAME="warp-docker"; WARP_IMAGE_NAME="caomingjun/warp"; WARP_VOLUME_PATH="$(pwd)/warp-data"
 HYSTERIA_CONTAINER_NAME="hysteria-server"; HYSTERIA_IMAGE_NAME="tobyxdd/hysteria"; HYSTERIA_CONFIG_DIR="$(pwd)/hysteria"; HYSTERIA_CONFIG_FILE="${HYSTERIA_CONFIG_DIR}/config.yaml"
 SHARED_NETWORK_NAME="proxy-net"
 SCRIPT_URL="https://raw.githubusercontent.com/thenogodcom/warp/main/hwc.sh"
