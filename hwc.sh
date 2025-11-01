@@ -2,7 +2,7 @@
 #
 # Description: Ultimate All-in-One Manager for Caddy, WARP & Hysteria with self-installing shortcut.
 # Author: Your Name (Inspired by P-TERX)
-# Version: 5.5.0 (Universal Docker Installer Edition)
+# Version: 5.5.1 (Universal Docker Installer Fix)
 
 # --- 第1節：全域設定與定義 ---
 
@@ -21,7 +21,7 @@ log() {
     echo -e "${LEVEL} ${MSG}"
 }
 
-# 固定的應用程式基礎目錄，解決 `pwd` 帶來的路徑不確定問題
+# 固定的應用程式基礎目錄
 APP_BASE_DIR="/root/hwc"
 CADDY_CONTAINER_NAME="caddy-manager"; CADDY_IMAGE_NAME="caddy:latest"; CADDY_CONFIG_DIR="${APP_BASE_DIR}/caddy"; CADDY_CONFIG_FILE="${CADDY_CONFIG_DIR}/Caddyfile"; CADDY_DATA_VOLUME="hwc_caddy_data"
 WARP_CONTAINER_NAME="warp-docker"; WARP_IMAGE_NAME="ghcr.io/105pm/docker-warproxy:latest"; WARP_VOLUME_PATH="${APP_BASE_DIR}/warp-data"
@@ -39,13 +39,11 @@ self_install() {
     if [ "$running_script_path" = "$SHORTCUT_PATH" ]; then return 0; fi
 
     log INFO "首次運行設定：正在安裝 'hwc' 快捷命令以便日後存取..."
-    # 確保 curl 已安裝
     if ! command -v curl &>/dev/null; then
         log WARN "'curl' 未安裝，正在嘗試安裝..."
         if command -v apt-get &>/dev/null; then apt-get update && apt-get install -y --no-install-recommends curl; fi
         if command -v yum &>/dev/null || command -v dnf &>/dev/null; then 
-            command -v yum &>/dev/null && yum install -y curl
-            command -v dnf &>/dev/null && dnf install -y curl
+            command -v yum &>/dev/null && yum install -y curl || dnf install -y curl
         fi
     fi
     if curl -sSL "${SCRIPT_URL}" -o "${SHORTCUT_PATH}"; then
@@ -53,18 +51,16 @@ self_install() {
         log INFO "快捷命令 'hwc' 安裝成功。正在從新位置重新啟動..."
         exec "${SHORTCUT_PATH}" "$@"
     else
-        log ERROR "無法安裝 'hwc' 快捷命令至 ${SHORTCUT_PATH}。"
-        log WARN "本次將臨時運行腳本，請檢查權限後重試。"
-        sleep 3
+        log ERROR "無法安裝 'hwc' 快捷命令至 ${SHORTCUT_PATH}。"; log WARN "本次將臨時運行腳本，請檢查權限後重試。"; sleep 3
     fi
 }
 
-# 使用官方通用腳本自動安裝 Docker
+# 使用官方通用腳本自動安裝 Docker，解決所有兼容性問題
 install_docker() {
     log INFO "偵測到 Docker 未安裝，正在使用官方通用腳本進行安裝..."
-    log INFO "這將確保對各種 Linux 發行版的最佳兼容性。"
+    log INFO "此方法將確保對各種 Linux 發行版（包括 Debian Trixie）的最佳兼容性。"
     
-    # 從 get.docker.com 下載並執行官方安裝腳本
+    # 執行官方安裝腳本，它會自動處理系統識別、軟體庫和 GPG 密鑰
     if ! curl -fsSL https://get.docker.com | sh; then
         log ERROR "Docker 安裝失敗。請檢查上面的日誌輸出，或嘗試手動運行 'curl -fsSL https://get.docker.com | sh' 來獲取更詳細的錯誤信息。"
         exit 1
@@ -72,8 +68,7 @@ install_docker() {
     
     log INFO "正在啟動並設定 Docker 開機自啟..."
     if ! systemctl start docker; then
-        log ERROR "無法啟動 Docker 服務。請使用 'systemctl status docker' 檢查狀態。"
-        exit 1
+        log ERROR "無法啟動 Docker 服務。請使用 'systemctl status docker' 檢查狀態。"; exit 1
     fi
     systemctl enable docker
     log INFO "Docker 安裝成功並已啟動。"
@@ -84,57 +79,41 @@ check_root() { if [ "$EUID" -ne 0 ]; then log ERROR "此腳本必須以 root 身
 
 # 檢查並整備 Docker 環境
 check_docker() {
-    # 關鍵步驟：僅在 'docker' 命令不存在時，才觸發安裝流程。
     if ! command -v docker &>/dev/null; then
         install_docker
     fi
-    
-    # 檢查 Docker 服務是否正在運行
     if ! docker info >/dev/null 2>&1; then
-        log WARN "Docker 服務未運行，正在嘗試啟動..."
-        systemctl start docker
-        sleep 3 # 等待服務完全啟動
+        log WARN "Docker 服務未運行，正在嘗試啟動..."; systemctl start docker; sleep 3
         if ! docker info >/dev/null 2>&1; then
-            log ERROR "無法啟動 Docker 服務，請手動檢查 ('systemctl status docker' 或 'journalctl -xeu docker.service')。"
-            exit 1
+            log ERROR "無法啟動 Docker 服務，請手動檢查 ('systemctl status docker' 或 'journalctl -xeu docker.service')。"; exit 1
         fi
         log INFO "Docker 服務已成功啟動。"
     fi
 }
 
 # 檢查可用的文字編輯器
-check_editor() {
-    for editor in nano vi vim; do
-        if command -v $editor &>/dev/null; then EDITOR=$editor; return 0; fi
-    done
-    log ERROR "未找到合適的文字編輯器 (nano, vi, vim)。"; return 1
-}
-
+check_editor() { for editor in nano vi vim; do if command -v $editor &>/dev/null; then EDITOR=$editor; return 0; fi; done; log ERROR "未找到合適的文字編輯器 (nano, vi, vim)。"; return 1; }
 # 檢查容器是否存在
 container_exists() { docker ps -a --format '{{.Names}}' | grep -q "^${1}$"; }
-
 # 等待用戶按鍵繼續
 press_any_key() { echo ""; read -p "按 Enter 鍵返回..." < /dev/tty; }
 
-# 生成 Caddyfile 設定檔
+# [業務邏輯函數... 保持不變]
 generate_caddy_config() {
     local domain="$1" email="$2" log_mode="$3"
     mkdir -p "${CADDY_CONFIG_DIR}"
     local log_block=""
-    if [[ ! "$log_mode" =~ ^[yY]$ ]]; then
-        log_block=$(cat <<-LOG
+    if [[ ! "$log_mode" =~ ^[yY]$ ]]; then log_block=$(cat <<-LOG
     log {
         output stderr
         level  ERROR
     }
 LOG
-)
-    fi
+); fi
     cat > "${CADDY_CONFIG_FILE}" << EOF
 {
     email ${email}
 }
-
 ${domain} {
 ${log_block}
     respond "服務正在運行。" 200
@@ -142,8 +121,6 @@ ${log_block}
 EOF
     log INFO "已為域名 ${domain} 建立 Caddyfile 設定檔。";
 }
-
-# 生成 Hysteria 設定檔
 generate_hysteria_config() {
     local domain="$1" password="$2" log_mode="$3"
     mkdir -p "${HYSTERIA_CONFIG_DIR}"
@@ -180,14 +157,10 @@ acl:
 EOF
     log INFO "Hysteria 的 config.yaml 已建立，日誌級別設定為 '${log_level}'。";
 }
-
-# 管理 Caddy
 manage_caddy() {
     if ! container_exists "$CADDY_CONTAINER_NAME"; then
         while true; do
-            clear; log INFO "--- 管理 Caddy (未安裝) ---"
-            echo " 1. 安裝 Caddy (用於自動申請SSL證書)"
-            echo " 0. 返回主選單"
+            clear; log INFO "--- 管理 Caddy (未安裝) ---"; echo " 1. 安裝 Caddy (用於自動申請SSL證書)"; echo " 0. 返回主選單"
             read -p "請輸入選項: " choice < /dev/tty
             case "$choice" in
                 1)
@@ -207,8 +180,7 @@ manage_caddy() {
         done
     else
         while true; do
-            clear; log INFO "--- 管理 Caddy (已安裝) ---"
-            echo " 1. 查看日誌"; echo " 2. 編輯 Caddyfile"; echo " 3. 重啟 Caddy 容器"; echo " 4. 卸載 Caddy"; echo " 0. 返回主選單"
+            clear; log INFO "--- 管理 Caddy (已安裝) ---"; echo " 1. 查看日誌"; echo " 2. 編輯 Caddyfile"; echo " 3. 重啟 Caddy 容器"; echo " 4. 卸載 Caddy"; echo " 0. 返回主選單"
             read -p "請輸入選項: " choice < /dev/tty
             case "$choice" in
                 1) docker logs -f "$CADDY_CONTAINER_NAME"; press_any_key;;
@@ -230,18 +202,14 @@ manage_caddy() {
         done
     fi
 }
-
-# 管理 WARP
 manage_warp() {
     if ! container_exists "$WARP_CONTAINER_NAME"; then
         while true; do
-            clear; log INFO "--- 管理 WARP (未安裝) ---"
-            echo " 1. 安裝 WARP (免費版)"; echo " 0. 返回主選單"
+            clear; log INFO "--- 管理 WARP (未安裝) ---"; echo " 1. 安裝 WARP (免費版)"; echo " 0. 返回主選單"
             read -p "請輸入選項: " choice < /dev/tty
             case "$choice" in
                 1)
-                    log INFO "--- 正在安裝 WARP ---"
-                    docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
+                    log INFO "--- 正在安裝 WARP ---"; docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
                     WARP_CMD=(docker run -d --name "${WARP_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${WARP_VOLUME_PATH}:/var/lib/cloudflare-warp" --cap-add=MKNOD --cap-add=AUDIT_WRITE --cap-add=NET_ADMIN --device-cgroup-rule='c 10:200 rwm' --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv4.conf.all.src_valid_mark=1 "${WARP_IMAGE_NAME}")
                     if "${WARP_CMD[@]}"; then log INFO "WARP 部署成功。"; else log ERROR "WARP 部署失敗。"; fi
                     press_any_key; break;;
@@ -251,8 +219,7 @@ manage_warp() {
         done
     else
          while true; do
-            clear; log INFO "--- 管理 WARP (已安裝) ---"
-            echo " 1. 查看日誌"; echo " 2. 重啟 WARP 容器"; echo " 3. 卸載 WARP"; echo " 0. 返回主選單"
+            clear; log INFO "--- 管理 WARP (已安裝) ---"; echo " 1. 查看日誌"; echo " 2. 重啟 WARP 容器"; echo " 3. 卸載 WARP"; echo " 0. 返回主選單"
             read -p "請輸入選項: " choice < /dev/tty
             case "$choice" in
                 1) docker logs -f "$WARP_CONTAINER_NAME"; press_any_key;;
@@ -272,13 +239,10 @@ manage_warp() {
         done
     fi
 }
-
-# 管理 Hysteria
 manage_hysteria() {
     if ! container_exists "$HYSTERIA_CONTAINER_NAME"; then
         while true; do
-            clear; log INFO "--- 管理 Hysteria (未安裝) ---"
-            echo " 1. 安裝 Hysteria"; echo " 0. 返回主選單"
+            clear; log INFO "--- 管理 Hysteria (未安裝) ---"; echo " 1. 安裝 Hysteria"; echo " 0. 返回主選單"
             read -p "請輸入選項: " choice < /dev/tty
             case "$choice" in
                 1)
@@ -299,8 +263,7 @@ manage_hysteria() {
         done
     else
         while true; do
-            clear; log INFO "--- 管理 Hysteria (已安裝) ---"
-            echo " 1. 查看日誌"; echo " 2. 編輯設定檔"; echo " 3. 重啟 Hysteria 容器"; echo " 4. 卸載 Hysteria"; echo " 0. 返回主選單"
+            clear; log INFO "--- 管理 Hysteria (已安裝) ---"; echo " 1. 查看日誌"; echo " 2. 編輯設定檔"; echo " 3. 重啟 Hysteria 容器"; echo " 4. 卸載 Hysteria"; echo " 0. 返回主選單"
             read -p "請輸入選項: " choice < /dev/tty
             case "$choice" in
                 1) docker logs -f "$HYSTERIA_CONTAINER_NAME"; press_any_key;;
@@ -320,8 +283,6 @@ manage_hysteria() {
         done
     fi
 }
-
-# (非互動式) 清除所有服務的日誌
 clear_all_logs() {
     log INFO "正在清除所有已安裝服務容器的內部日誌..."
     for container in "$CADDY_CONTAINER_NAME" "$WARP_CONTAINER_NAME" "$HYSTERIA_CONTAINER_NAME"; do
@@ -333,77 +294,48 @@ clear_all_logs() {
     done
     log INFO "所有服務日誌已清空。"
 }
-
-# 重啟所有正在運行的服務
 restart_all_services() {
     log INFO "正在重啟所有正在運行的容器..."
     local restarted=0
     for container in "$CADDY_CONTAINER_NAME" "$WARP_CONTAINER_NAME" "$HYSTERIA_CONTAINER_NAME"; do
         if container_exists "$container" && [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" = "true" ]; then
-            log INFO "正在重啟 ${container}..."
-            docker restart "$container" &>/dev/null
-            restarted=$((restarted + 1))
+            log INFO "正在重啟 ${container}..."; docker restart "$container" &>/dev/null; restarted=$((restarted + 1))
         fi
     done
     if [ "$restarted" -eq 0 ]; then log WARN "沒有正在運行的容器可供重啟。"; else log INFO "所有正在運行的容器已成功發出重啟命令。"; fi
 }
-
-# 組合函數：清理日誌並重啟服務
-clear_logs_and_restart_all() {
-    clear_all_logs
-    log INFO "3秒後將自動重啟所有正在運行的服務..."
-    sleep 3
-    restart_all_services
-}
-
-# 卸載所有服務
+clear_logs_and_restart_all() { clear_all_logs; log INFO "3秒後將自動重啟所有正在運行的服務..."; sleep 3; restart_all_services; }
 uninstall_all_services() {
     log WARN "此操作將不可逆地刪除 Caddy, WARP, Hysteria 的容器、設定檔、數據卷和網路！"
     read -p "您確定要徹底清理所有服務嗎? (y/N): " choice < /dev/tty
     if [[ ! "$choice" =~ ^[yY]$ ]]; then log INFO "操作已取消。"; return; fi
-
-    log INFO "正在停止並刪除所有服務容器..."
-    docker stop "${CADDY_CONTAINER_NAME}" "${WARP_CONTAINER_NAME}" "${HYSTERIA_CONTAINER_NAME}" &>/dev/null
-    docker rm "${CADDY_CONTAINER_NAME}" "${WARP_CONTAINER_NAME}" "${HYSTERIA_CONTAINER_NAME}" &>/dev/null
-    log INFO "所有容器已刪除。"
-
+    log INFO "正在停止並刪除所有服務容器..."; docker stop "${CADDY_CONTAINER_NAME}" "${WARP_CONTAINER_NAME}" "${HYSTERIA_CONTAINER_NAME}" &>/dev/null; docker rm "${CADDY_CONTAINER_NAME}" "${WARP_CONTAINER_NAME}" "${HYSTERIA_CONTAINER_NAME}" &>/dev/null; log INFO "所有容器已刪除。"
     log INFO "正在刪除本地設定檔和數據..."; rm -rf "${APP_BASE_DIR}"; log INFO "本地設定檔和數據目錄 (${APP_BASE_DIR}) 已刪除。"
     log INFO "正在刪除 Docker 數據卷..."; docker volume rm "${CADDY_DATA_VOLUME}" &>/dev/null; log INFO "Docker 數據卷已刪除。"
     log INFO "正在刪除共享網路..."; docker network rm "${SHARED_NETWORK_NAME}" &>/dev/null; log INFO "共享網路已刪除。"
     log INFO "所有服務已徹底清理完畢。"
 }
-
-# 檢查所有服務的狀態
 check_all_status() {
     local containers=("$CADDY_CONTAINER_NAME" "$WARP_CONTAINER_NAME" "$HYSTERIA_CONTAINER_NAME")
     for container in "${containers[@]}"; do
-        if ! container_exists "$container"; then
-            CONTAINER_STATUSES["$container"]="${FontColor_Red}未安裝${FontColor_Suffix}"
-        else
+        if ! container_exists "$container"; then CONTAINER_STATUSES["$container"]="${FontColor_Red}未安裝${FontColor_Suffix}"; else
             local status; status=$(docker inspect --format '{{.State.Status}}' "$container" 2>/dev/null)
             if [ "$status" = "running" ]; then CONTAINER_STATUSES["$container"]="${FontColor_Green}運行中${FontColor_Suffix}"; else CONTAINER_STATUSES["$container"]="${FontColor_Red}異常 (${status})${FontColor_Suffix}"; fi
         fi
     done
 }
-
-# 主選單
 start_menu() {
     while true; do
-        check_all_status
-        clear
-        echo -e "\n${FontColor_Purple}Caddy + WARP + Hysteria 終極管理腳本${FontColor_Suffix} (v5.5.0)"
-        echo -e "  快捷命令: ${FontColor_Yellow}hwc${FontColor_Suffix}"
-        echo -e "  設定目錄: ${FontColor_Yellow}${APP_BASE_DIR}${FontColor_Suffix}"
+        check_all_status; clear
+        echo -e "\n${FontColor_Purple}Caddy + WARP + Hysteria 終極管理腳本${FontColor_Suffix} (v5.5.1)"
+        echo -e "  快捷命令: ${FontColor_Yellow}hwc${FontColor_Suffix}\n  設定目錄: ${FontColor_Yellow}${APP_BASE_DIR}${FontColor_Suffix}"
         echo -e " --------------------------------------------------"
         echo -e "  Caddy 服務      : ${CONTAINER_STATUSES[$CADDY_CONTAINER_NAME]}"
         echo -e "  WARP 服務       : ${CONTAINER_STATUSES[$WARP_CONTAINER_NAME]}"
         echo -e "  Hysteria 服務   : ${CONTAINER_STATUSES[$HYSTERIA_CONTAINER_NAME]}"
         echo -e " --------------------------------------------------\n"
-        echo -e " ${FontColor_Green}1.${FontColor_Suffix} 管理 Caddy..."
-        echo -e " ${FontColor_Green}2.${FontColor_Suffix} 管理 WARP..."
-        echo -e " ${FontColor_Green}3.${FontColor_Suffix} 管理 Hysteria...\n"
-        echo -e " ${FontColor_Yellow}4.${FontColor_Suffix} 清理日誌並重啟所有服務"
-        echo -e " ${FontColor_Red}5.${FontColor_Suffix} 徹底清理所有服務\n"
+        echo -e " ${FontColor_Green}1.${FontColor_Suffix} 管理 Caddy...\n ${FontColor_Green}2.${FontColor_Suffix} 管理 WARP...\n ${FontColor_Green}3.${FontColor_Suffix} 管理 Hysteria...\n"
+        echo -e " ${FontColor_Yellow}4.${FontColor_Suffix} 清理日誌並重啟所有服務\n ${FontColor_Red}5.${FontColor_Suffix} 徹底清理所有服務\n"
         echo -e " ${FontColor_Yellow}0.${FontColor_Suffix} 退出腳本\n"
         read -p " 請輸入選項 [0-5]: " num < /dev/tty
         case "$num" in
