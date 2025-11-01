@@ -21,7 +21,7 @@ hwc
 
 ---
 
-<img width="100%" alt="Caddy + WARP + Hysteria" src="https://github.com/user-attachments/assets/83c1984a-a809-451b-b84a-19dfb8c0aa1f" />
+<img width="100%" alt="Caddy + WARP + Hysteria" src="https://github.com/user-attachments/assets/e7d926cc-d149-4f0c-a4e7-ab7c31fac869" />
 
 ---
 
