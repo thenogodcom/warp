@@ -165,7 +165,7 @@ outbounds:
   - name: warp
     type: socks5
     socks5:
-      addr: ${WARP_CONTAINER_NAME}:1080
+      addr: ${WARP_CONTAINER_NAME}:8008
 acl:
   inline:
     - direct(suffix:youtube.com)
