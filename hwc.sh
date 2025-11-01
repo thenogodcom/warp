@@ -1,8 +1,8 @@
-#!/usr/bin/env bash
+#!/usr//bin/env bash
 #
 # Description: Ultimate All-in-One Manager for Caddy, WARP & Hysteria with self-installing shortcut.
 # Author: Your Name (Inspired by P-TERX)
-# Version: 5.3.2 (Streamlined Edition)
+# Version: 5.4.1 (Idempotent & Robust Edition)
 
 # --- 第1節：全域設定與定義 ---
 
@@ -29,7 +29,7 @@ CADDY_CONTAINER_NAME="caddy-manager"
 CADDY_IMAGE_NAME="caddy:latest"
 CADDY_CONFIG_DIR="${APP_BASE_DIR}/caddy"
 CADDY_CONFIG_FILE="${CADDY_CONFIG_DIR}/Caddyfile"
-CADDY_DATA_VOLUME="hwc_caddy_data" # 為數據卷名稱加上前綴以避免衝突
+CADDY_DATA_VOLUME="hwc_caddy_data"
 
 # WARP 相關設定
 WARP_CONTAINER_NAME="warp-docker"
@@ -43,13 +43,13 @@ HYSTERIA_CONFIG_DIR="${APP_BASE_DIR}/hysteria"
 HYSTERIA_CONFIG_FILE="${HYSTERIA_CONFIG_DIR}/config.yaml"
 
 # 共享資源設定
-SHARED_NETWORK_NAME="hwc-proxy-net" # 為網路名稱加上前綴以避免衝突
+SHARED_NETWORK_NAME="hwc-proxy-net"
 
 # 腳本自身相關設定
 SCRIPT_URL="https://raw.githubusercontent.com/thenogodcom/warp/main/hwc.sh"
 SHORTCUT_PATH="/usr/local/bin/hwc"
 
-# 用於儲存容器狀態的關聯陣列，以替代不安全的 eval
+# 用於儲存容器狀態的關聯陣列
 declare -A CONTAINER_STATUSES
 
 # --- 第2節：所有函數定義 ---
@@ -57,16 +57,21 @@ declare -A CONTAINER_STATUSES
 # 自我安裝快捷命令
 self_install() {
     local running_script_path
-    # 確保 $0 不是一個符號連結
     if [[ -f "$0" ]]; then running_script_path=$(readlink -f "$0"); fi
-    # 如果當前執行的腳本就是目標快捷命令，則無需安裝
     if [ "$running_script_path" = "$SHORTCUT_PATH" ]; then return 0; fi
 
     log INFO "首次運行設定：正在安裝 'hwc' 快捷命令以便日後存取..."
+    if ! command -v curl &>/dev/null; then
+        log WARN "'curl' 未安裝，正在嘗試安裝..."
+        if command -v apt-get &>/dev/null; then apt-get update && apt-get install -y --no-install-recommends curl; fi
+        if command -v yum &>/dev/null || command -v dnf &>/dev/null; then 
+            command -v yum &>/dev/null && yum install -y curl
+            command -v dnf &>/dev/null && dnf install -y curl
+        fi
+    fi
     if curl -sSL "${SCRIPT_URL}" -o "${SHORTCUT_PATH}"; then
         chmod +x "${SHORTCUT_PATH}"
         log INFO "快捷命令 'hwc' 安裝成功。正在從新位置重新啟動..."
-        # 使用 exec 替換當前進程，無縫切換
         exec "${SHORTCUT_PATH}" "$@"
     else
         log ERROR "無法安裝 'hwc' 快捷命令至 ${SHORTCUT_PATH}。"
@@ -75,13 +80,86 @@ self_install() {
     fi
 }
 
+# (子函數) 安裝 Docker (Debian/Ubuntu)
+install_docker_apt() {
+    log INFO "正在為 Debian/Ubuntu 系統安裝 Docker..."
+    apt-get update
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+      $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+    apt-get update
+    apt-get install -y --no-install-recommends docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+}
+
+# (子函數) 安裝 Docker (CentOS/RHEL/Fedora)
+install_docker_yum() {
+    log INFO "正在為 CentOS/RHEL/Fedora 系統安裝 Docker..."
+    local PM="yum"
+    if command -v dnf &>/dev/null; then PM="dnf"; fi
+    ${PM} install -y yum-utils
+    yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+    ${PM} install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+}
+
+# 自動安裝 Docker
+install_docker() {
+    log INFO "偵測到 Docker 未安裝，正在嘗試自動安裝..."
+    if [ ! -f /etc/os-release ]; then
+        log ERROR "無法偵測到作業系統類型。請手動安裝 Docker。"
+        exit 1
+    fi
+    
+    local distro; distro=$(grep '^ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
+    
+    case "$distro" in
+        ubuntu|debian)
+            install_docker_apt
+            ;;
+        centos|rhel|fedora)
+            install_docker_yum
+            ;;
+        *)
+            log ERROR "不支持的 Linux 發行版: $distro。請手動安裝 Docker。"
+            exit 1
+            ;;
+    esac
+
+    if ! command -v docker &> /dev/null; then
+        log ERROR "Docker 安裝失敗，請檢查安裝日誌並手動安裝。"
+        exit 1
+    fi
+    
+    log INFO "正在啟動並設定 Docker 開機自啟..."
+    systemctl start docker
+    systemctl enable docker
+    log INFO "Docker 安裝成功並已啟動。"
+}
+
 # 檢查 root 權限
 check_root() { if [ "$EUID" -ne 0 ]; then log ERROR "此腳本必須以 root 身份運行。請使用 'sudo'。"; exit 1; fi; }
 
-# 檢查 Docker 環境
+# 檢查並整備 Docker 環境
 check_docker() {
-    if ! [ -x "$(command -v docker)" ]; then log ERROR "Docker 未安裝。"; exit 1; fi
-    if ! docker info >/dev/null 2>&1; then log ERROR "Docker 服務未運行。"; exit 1; fi
+    # 關鍵步驟：僅在 'docker' 命令不存在時，才觸發安裝流程。
+    # 這確保了如果 Docker 已安裝，此區塊將被安全跳過。
+    if ! command -v docker &>/dev/null; then
+        install_docker
+    fi
+    
+    # 檢查 Docker 服務是否正在運行
+    if ! docker info >/dev/null 2>&1; then
+        log WARN "Docker 服務未運行，正在嘗試啟動..."
+        systemctl start docker
+        sleep 3 # 等待服務完全啟動
+        if ! docker info >/dev/null 2>&1; then
+            log ERROR "無法啟動 Docker 服務，請手動檢查 ('systemctl status docker' 或 'journalctl -xeu docker.service')。"
+            exit 1
+        fi
+        log INFO "Docker 服務已成功啟動。"
+    fi
 }
 
 # 檢查可用的文字編輯器
@@ -99,13 +177,16 @@ container_exists() { docker ps -a --format '{{.Names}}' | grep -q "^${1}$"; }
 # 等待用戶按鍵繼續
 press_any_key() { echo ""; read -p "按 Enter 鍵返回..." < /dev/tty; }
 
+# --- [後面部分的業務邏輯函數與之前版本相同，此處為節省篇幅省略] ---
+# --- [generate_caddy_config, generate_hysteria_config, manage_caddy, manage_warp, manage_hysteria, etc.] ---
+# --- [為保持完整性，將所有函數複製於下方] ---
+
 # 生成 Caddyfile 設定檔
 generate_caddy_config() {
     local domain="$1" email="$2" log_mode="$3"
     mkdir -p "${CADDY_CONFIG_DIR}"
 
     local log_block=""
-    # 根據用戶選擇決定是否加入詳細日誌區塊
     if [[ ! "$log_mode" =~ ^[yY]$ ]]; then
         log_block=$(cat <<-LOG
     log {
@@ -116,7 +197,6 @@ LOG
 )
     fi
 
-    # 使用 here-document 寫入設定檔，更清晰
     cat > "${CADDY_CONFIG_FILE}" << EOF
 {
     email ${email}
@@ -136,7 +216,6 @@ generate_hysteria_config() {
     mkdir -p "${HYSTERIA_CONFIG_DIR}"
     local log_level="error"; if [[ "$log_mode" =~ ^[yY]$ ]]; then log_level="info"; fi
 
-    # 使用 here-document 寫入設定檔
     cat > "${HYSTERIA_CONFIG_FILE}" << EOF
 listen: :443
 logLevel: ${log_level}
@@ -157,7 +236,6 @@ outbounds:
       addr: ${WARP_CONTAINER_NAME}:1080
 acl:
   inline:
-    # 直連常見的開發與影音網站以提高速度
     - direct(suffix:youtube.com)
     - direct(suffix:youtu.be)
     - direct(suffix:ytimg.com)
@@ -166,7 +244,6 @@ acl:
     - direct(suffix:github.io)
     - direct(suffix:githubassets.com)
     - direct(suffix:githubusercontent.com)
-    # 其餘所有流量走 WARP
     - warp(all)
 EOF
     log INFO "Hysteria 的 config.yaml 已建立，日誌級別設定為 '${log_level}'。";
@@ -189,7 +266,6 @@ manage_caddy() {
                     read -p "是否為 Caddy 啟用詳細日誌？(用於排錯，預設為否) (y/N): " LOG_MODE < /dev/tty
                     generate_caddy_config "$DOMAIN" "$EMAIL" "$LOG_MODE"
                     docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
-                    # 使用陣列執行 docker 命令，更安全可靠
                     CADDY_CMD=(docker run -d --name "${CADDY_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -p 80:80/tcp -p 443:443/tcp -v "${CADDY_CONFIG_FILE}:/etc/caddy/Caddyfile:ro" -v "${CADDY_DATA_VOLUME}:/data" "${CADDY_IMAGE_NAME}")
                     if "${CADDY_CMD[@]}"; then log INFO "Caddy 部署成功。正在後台申請證書，請稍候..."; else log ERROR "Caddy 部署失敗。"; fi
                     press_any_key; break;;
@@ -340,7 +416,6 @@ clear_all_logs() {
         if container_exists "$container"; then
             log INFO "正在清除 ${container} 的日誌..."
             local log_path; log_path=$(docker inspect --format='{{.LogPath}}' "$container")
-            # 腳本已在 root 權限下運行，無需 sudo
             if [ -f "$log_path" ] && ! truncate -s 0 "$log_path"; then
                  log WARN "無法清空 ${container} 的日誌檔案: ${log_path}"
             fi
@@ -363,7 +438,7 @@ restart_all_services() {
     if [ "$restarted" -eq 0 ]; then log WARN "沒有正在運行的容器可供重啟。"; else log INFO "所有正在運行的容器已成功發出重啟命令。"; fi
 }
 
-# 新增的組合函數：清理日誌並重啟服務
+# 組合函數：清理日誌並重啟服務
 clear_logs_and_restart_all() {
     clear_all_logs
     log INFO "3秒後將自動重啟所有正在運行的服務..."
@@ -419,7 +494,7 @@ start_menu() {
     while true; do
         check_all_status
         clear
-        echo -e "\n${FontColor_Purple}Caddy + WARP + Hysteria 終極管理腳本${FontColor_Suffix} (v5.3.2)"
+        echo -e "\n${FontColor_Purple}Caddy + WARP + Hysteria 終極管理腳本${FontColor_Suffix} (v5.4.1)"
         echo -e "  快捷命令: ${FontColor_Yellow}hwc${FontColor_Suffix}"
         echo -e "  設定目錄: ${FontColor_Yellow}${APP_BASE_DIR}${FontColor_Suffix}"
         echo -e " --------------------------------------------------"
