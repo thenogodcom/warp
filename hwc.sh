@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Description: Ultimate All-in-One Manager for Caddy, WARP & Hysteria with self-installing shortcut.
+# Description: Ultimate All-in-One Manager for Caddy, WARP, Hysteria & AdGuard Home with self-installing shortcut.
 # Author: Your Name (Inspired by P-TERX)
-# Version: 5.5.0 (Universal Docker Installer Edition)
+# Version: 5.6.0 (AdGuard Home Integration Edition)
 
 # --- 第1節：全域設定與定義 ---
 
@@ -26,6 +26,7 @@ APP_BASE_DIR="/root/hwc"
 CADDY_CONTAINER_NAME="caddy-manager"; CADDY_IMAGE_NAME="caddy:latest"; CADDY_CONFIG_DIR="${APP_BASE_DIR}/caddy"; CADDY_CONFIG_FILE="${CADDY_CONFIG_DIR}/Caddyfile"; CADDY_DATA_VOLUME="hwc_caddy_data"
 WARP_CONTAINER_NAME="warp-docker"; WARP_IMAGE_NAME="ghcr.io/105pm/docker-warproxy:latest"; WARP_VOLUME_PATH="${APP_BASE_DIR}/warp-data"
 HYSTERIA_CONTAINER_NAME="hysteria-server"; HYSTERIA_IMAGE_NAME="tobyxdd/hysteria"; HYSTERIA_CONFIG_DIR="${APP_BASE_DIR}/hysteria"; HYSTERIA_CONFIG_FILE="${HYSTERIA_CONFIG_DIR}/config.yaml"
+ADGUARD_CONTAINER_NAME="adguard-home"; ADGUARD_IMAGE_NAME="adguard/adguardhome:edge"; ADGUARD_CONFIG_DIR="${APP_BASE_DIR}/adguard/conf"; ADGUARD_WORK_DIR="${APP_BASE_DIR}/adguard/work"
 SHARED_NETWORK_NAME="hwc-proxy-net"
 SCRIPT_URL="https://raw.githubusercontent.com/thenogodcom/warp/main/hwc.sh"; SHORTCUT_PATH="/usr/local/bin/hwc"
 declare -A CONTAINER_STATUSES
@@ -321,10 +322,66 @@ manage_hysteria() {
     fi
 }
 
+# 管理 AdGuard Home
+manage_adguard() {
+    if ! container_exists "$ADGUARD_CONTAINER_NAME"; then
+        while true; do
+            clear; log INFO "--- 管理 AdGuard Home (未安裝) ---"
+            echo " 1. 安裝 AdGuard Home (DNS 廣告過濾器)"
+            echo " 0. 返回主選單"
+            read -p "請輸入選項: " choice < /dev/tty
+            case "$choice" in
+                1)
+                    log INFO "--- 正在安裝 AdGuard Home ---"
+                    read -p "請為 AdGuard Home 的 Web 管理界面設定一個端口 [預設: 3000]: " WEB_PORT < /dev/tty
+                    WEB_PORT=${WEB_PORT:-3000}
+                    log WARN "DNS 服務將使用 53 端口。請確保主機的 53 端口未被 systemd-resolved 等服務占用。"
+                    log WARN "如果 53 端口衝突導致安裝失敗，請先停用主機的 DNS 服務再重試。"
+                    
+                    mkdir -p "${ADGUARD_CONFIG_DIR}" "${ADGUARD_WORK_DIR}"
+                    docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
+
+                    AG_CMD=(docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 53:53/tcp -p 53:53/udp -p "${WEB_PORT}:3000/tcp" "${ADGUARD_IMAGE_NAME}")
+
+                    if "${AG_CMD[@]}"; then
+                        log INFO "AdGuard Home 部署成功。"
+                        log INFO "首次安裝後，請訪問 http://<您的伺服器IP>:${WEB_PORT} 進行初始化設定。"
+                    else
+                        log ERROR "AdGuard Home 部署失敗。請檢查端口是否衝突。"
+                    fi
+                    press_any_key; break;;
+                0) break;;
+                *) log ERROR "無效輸入!"; sleep 1;;
+            esac
+        done
+    else
+        while true; do
+            clear; log INFO "--- 管理 AdGuard Home (已安裝) ---"
+            echo " 1. 查看日誌"; echo " 2. 重啟 AdGuard Home 容器"; echo " 3. 卸載 AdGuard Home"; echo " 0. 返回主選單"
+            read -p "請輸入選項: " choice < /dev/tty
+            case "$choice" in
+                1) docker logs -f "$ADGUARD_CONTAINER_NAME"; press_any_key;;
+                2) log INFO "正在重啟 AdGuard Home 容器..."; docker restart "$ADGUARD_CONTAINER_NAME"; sleep 2;;
+                3)
+                    read -p "確定要卸載 AdGuard Home 嗎? (y/N): " uninstall_choice < /dev/tty
+                    if [[ "$uninstall_choice" =~ ^[yY]$ ]]; then
+                        docker stop "${ADGUARD_CONTAINER_NAME}" &>/dev/null && docker rm "${ADGUARD_CONTAINER_NAME}" &>/dev/null
+                        read -p "是否刪除 AdGuard Home 的所有設定檔和數據？(y/N): " del_choice < /dev/tty
+                        if [[ "$del_choice" =~ ^[yY]$ ]]; then rm -rf "${APP_BASE_DIR}/adguard"; log INFO "AdGuard Home 的設定和數據已刪除。"; fi
+                        log INFO "AdGuard Home 已卸載。";
+                    fi
+                    press_any_key; break;;
+                0) break;;
+                *) log ERROR "無效輸入!"; sleep 1;;
+            esac
+        done
+    fi
+}
+
 # (非互動式) 清除所有服務的日誌
 clear_all_logs() {
     log INFO "正在清除所有已安裝服務容器的內部日誌..."
-    for container in "$CADDY_CONTAINER_NAME" "$WARP_CONTAINER_NAME" "$HYSTERIA_CONTAINER_NAME"; do
+    for container in "$CADDY_CONTAINER_NAME" "$WARP_CONTAINER_NAME" "$HYSTERIA_CONTAINER_NAME" "$ADGUARD_CONTAINER_NAME"; do
         if container_exists "$container"; then
             log INFO "正在清除 ${container} 的日誌..."
             local log_path; log_path=$(docker inspect --format='{{.LogPath}}' "$container")
@@ -338,7 +395,7 @@ clear_all_logs() {
 restart_all_services() {
     log INFO "正在重啟所有正在運行的容器..."
     local restarted=0
-    for container in "$CADDY_CONTAINER_NAME" "$WARP_CONTAINER_NAME" "$HYSTERIA_CONTAINER_NAME"; do
+    for container in "$CADDY_CONTAINER_NAME" "$WARP_CONTAINER_NAME" "$HYSTERIA_CONTAINER_NAME" "$ADGUARD_CONTAINER_NAME"; do
         if container_exists "$container" && [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" = "true" ]; then
             log INFO "正在重啟 ${container}..."
             docker restart "$container" &>/dev/null
@@ -358,13 +415,13 @@ clear_logs_and_restart_all() {
 
 # 卸載所有服務
 uninstall_all_services() {
-    log WARN "此操作將不可逆地刪除 Caddy, WARP, Hysteria 的容器、設定檔、數據卷和網路！"
+    log WARN "此操作將不可逆地刪除 Caddy, WARP, Hysteria, AdGuard Home 的容器、設定檔、數據卷和網路！"
     read -p "您確定要徹底清理所有服務嗎? (y/N): " choice < /dev/tty
     if [[ ! "$choice" =~ ^[yY]$ ]]; then log INFO "操作已取消。"; return; fi
 
     log INFO "正在停止並刪除所有服務容器..."
-    docker stop "${CADDY_CONTAINER_NAME}" "${WARP_CONTAINER_NAME}" "${HYSTERIA_CONTAINER_NAME}" &>/dev/null
-    docker rm "${CADDY_CONTAINER_NAME}" "${WARP_CONTAINER_NAME}" "${HYSTERIA_CONTAINER_NAME}" &>/dev/null
+    docker stop "${CADDY_CONTAINER_NAME}" "${WARP_CONTAINER_NAME}" "${HYSTERIA_CONTAINER_NAME}" "${ADGUARD_CONTAINER_NAME}" &>/dev/null
+    docker rm "${CADDY_CONTAINER_NAME}" "${WARP_CONTAINER_NAME}" "${HYSTERIA_CONTAINER_NAME}" "${ADGUARD_CONTAINER_NAME}" &>/dev/null
     log INFO "所有容器已刪除。"
 
     log INFO "正在刪除本地設定檔和數據..."; rm -rf "${APP_BASE_DIR}"; log INFO "本地設定檔和數據目錄 (${APP_BASE_DIR}) 已刪除。"
@@ -375,7 +432,7 @@ uninstall_all_services() {
 
 # 檢查所有服務的狀態
 check_all_status() {
-    local containers=("$CADDY_CONTAINER_NAME" "$WARP_CONTAINER_NAME" "$HYSTERIA_CONTAINER_NAME")
+    local containers=("$CADDY_CONTAINER_NAME" "$WARP_CONTAINER_NAME" "$HYSTERIA_CONTAINER_NAME" "$ADGUARD_CONTAINER_NAME")
     for container in "${containers[@]}"; do
         if ! container_exists "$container"; then
             CONTAINER_STATUSES["$container"]="${FontColor_Red}未安裝${FontColor_Suffix}"
@@ -391,25 +448,27 @@ start_menu() {
     while true; do
         check_all_status
         clear
-        echo -e "\n${FontColor_Purple}Caddy + WARP + Hysteria 終極管理腳本${FontColor_Suffix} (v5.5.0)"
+        echo -e "\n${FontColor_Purple}Caddy + WARP + Hysteria + AdGuard 終極管理腳本${FontColor_Suffix} (v5.6.0)"
         echo -e "  快捷命令: ${FontColor_Yellow}hwc${FontColor_Suffix}"
         echo -e "  設定目錄: ${FontColor_Yellow}${APP_BASE_DIR}${FontColor_Suffix}"
         echo -e " --------------------------------------------------"
-        echo -e "  Caddy 服務      : ${CONTAINER_STATUSES[$CADDY_CONTAINER_NAME]}"
-        echo -e "  WARP 服務       : ${CONTAINER_STATUSES[$WARP_CONTAINER_NAME]}"
-        echo -e "  Hysteria 服務   : ${CONTAINER_STATUSES[$HYSTERIA_CONTAINER_NAME]}"
+        echo -e "  Caddy 服務        : ${CONTAINER_STATUSES[$CADDY_CONTAINER_NAME]}"
+        echo -e "  WARP 服務         : ${CONTAINER_STATUSES[$WARP_CONTAINER_NAME]}"
+        echo -e "  Hysteria 服務     : ${CONTAINER_STATUSES[$HYSTERIA_CONTAINER_NAME]}"
+        echo -e "  AdGuard Home 服務 : ${CONTAINER_STATUSES[$ADGUARD_CONTAINER_NAME]}"
         echo -e " --------------------------------------------------\n"
         echo -e " ${FontColor_Green}1.${FontColor_Suffix} 管理 Caddy..."
         echo -e " ${FontColor_Green}2.${FontColor_Suffix} 管理 WARP..."
-        echo -e " ${FontColor_Green}3.${FontColor_Suffix} 管理 Hysteria...\n"
-        echo -e " ${FontColor_Yellow}4.${FontColor_Suffix} 清理日誌並重啟所有服務"
-        echo -e " ${FontColor_Red}5.${FontColor_Suffix} 徹底清理所有服務\n"
+        echo -e " ${FontColor_Green}3.${FontColor_Suffix} 管理 Hysteria..."
+        echo -e " ${FontColor_Green}4.${FontColor_Suffix} 管理 AdGuard Home...\n"
+        echo -e " ${FontColor_Yellow}5.${FontColor_Suffix} 清理日誌並重啟所有服務"
+        echo -e " ${FontColor_Red}6.${FontColor_Suffix} 徹底清理所有服務\n"
         echo -e " ${FontColor_Yellow}0.${FontColor_Suffix} 退出腳本\n"
-        read -p " 請輸入選項 [0-5]: " num < /dev/tty
+        read -p " 請輸入選項 [0-6]: " num < /dev/tty
         case "$num" in
-            1) manage_caddy;; 2) manage_warp;; 3) manage_hysteria;;
-            4) clear_logs_and_restart_all; press_any_key;;
-            5) uninstall_all_services; press_any_key;;
+            1) manage_caddy;; 2) manage_warp;; 3) manage_hysteria;; 4) manage_adguard;;
+            5) clear_logs_and_restart_all; press_any_key;;
+            6) uninstall_all_services; press_any_key;;
             0) exit 0;;
             *) log ERROR "無效輸入!"; sleep 2;;
         esac
@@ -426,7 +485,7 @@ cat <<-'EOM'
  \____\__,_|\__\__,_|   \  /\  /  | (_| | |_| ||  __/ | | | || (_| | |  | | (__
                         \/  \/    \__,_|\__|\__\___|_| |_|\__\__,_|_|  |_|\___|
 EOM
-echo -e "${FontColor_Purple}Caddy + WARP + Hysteria 終極一鍵管理腳本${FontColor_Suffix}"
+echo -e "${FontColor_Purple}Caddy + WARP + Hysteria + AdGuard 終極一鍵管理腳本${FontColor_Suffix}"
 echo "----------------------------------------------------------------"
 
 check_root
