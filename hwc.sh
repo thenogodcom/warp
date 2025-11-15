@@ -341,7 +341,9 @@ manage_adguard() {
                     mkdir -p "${ADGUARD_CONFIG_DIR}" "${ADGUARD_WORK_DIR}"
                     docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
 
-                    AG_CMD=(docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 53:53/tcp -p 53:53/udp -p "${WEB_PORT}:3000/tcp" "${ADGUARD_IMAGE_NAME}")
+                    # --- 已修改 ---
+                    # 移除了 -p 53:53/tcp 和 -p 53:53/udp 
+                    AG_CMD=(docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p "${WEB_PORT}:3000/tcp" "${ADGUARD_IMAGE_NAME}")
 
                     if "${AG_CMD[@]}"; then
                         log INFO "AdGuard Home 部署成功。"
