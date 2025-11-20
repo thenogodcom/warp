@@ -60,6 +60,71 @@ self_install() {
     fi
 }
 
+# 驗證域名格式
+validate_domain() {
+    local domain="$1"
+    if [[ ! "$domain" =~ ^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$ ]]; then
+        log ERROR "域名格式無效: $domain"
+        return 1
+    fi
+    return 0
+}
+
+# 驗證郵箱格式
+validate_email() {
+    local email="$1"
+    if [[ ! "$email" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+        log ERROR "郵箱格式無效: $email"
+        return 1
+    fi
+    return 0
+}
+
+# 驗證後端服務地址格式 (hostname:port 或 ip:port)
+validate_backend_service() {
+    local service="$1"
+    if [[ ! "$service" =~ ^[a-zA-Z0-9\._-]+:[0-9]+$ ]]; then
+        log ERROR "後端服務地址格式無效（應為 hostname:port）: $service"
+        return 1
+    fi
+    return 0
+}
+
+# 檢測證書路徑（支持多個 CA）
+detect_cert_path() {
+    local domain="$1"
+    local base_path="/data/caddy/certificates"
+    
+    # 在容器中檢查證書是否存在（通過檢查 caddy 容器的卷）
+    if container_exists "$CADDY_CONTAINER_NAME"; then
+        # 嘗試常見的 CA 目錄
+        for ca_dir in "acme-v02.api.letsencrypt.org-directory" "acme.zerossl.com-v2-DV90"; do
+            local cert_check
+            cert_check=$(docker exec "$CADDY_CONTAINER_NAME" sh -c "[ -f $base_path/$ca_dir/$domain/$domain.crt ] && echo 'exists'" 2>/dev/null)
+            if [ "$cert_check" = "exists" ]; then
+                echo "$base_path/$ca_dir/$domain/$domain.crt|$base_path/$ca_dir/$domain/$domain.key"
+                return 0
+            fi
+        done
+    fi
+    
+    # 回退到 Let's Encrypt 默認路徑
+    echo "$base_path/acme-v02.api.letsencrypt.org-directory/$domain/$domain.crt|$base_path/acme-v02.api.letsencrypt.org-directory/$domain/$domain.key"
+    return 1
+}
+
+# 生成隨機密碼（格式：xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxx）
+generate_random_password() {
+    # 僅使用小寫字母和數字，避免特殊字符
+    local part1=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 8)
+    local part2=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 4)
+    local part3=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 4)
+    local part4=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 4)
+    local part5=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 11)
+    echo "${part1}-${part2}-${part3}-${part4}-${part5}"
+}
+
+
 # 使用官方通用腳本自動安裝 Docker
 install_docker() {
     log INFO "偵測到 Docker 未安裝，正在使用官方通用腳本進行安裝..."
@@ -117,39 +182,92 @@ container_exists() { docker ps -a --format '{{.Names}}' | grep -q "^${1}$"; }
 # 等待用戶按鍵繼續
 press_any_key() { echo ""; read -p "按 Enter 鍵返回..." < /dev/tty; }
 
-# 生成 Caddyfile 設定檔
+# 生成 Caddyfile 設定檔（多域名+反向代理模式）
 generate_caddy_config() {
-    local domain="$1" email="$2" log_mode="$3"
+    local primary_domain="$1"
+    local email="$2"
+    local log_mode="$3"
+    local proxy_domain="$4"
+    local backend_service="$5"
+    
     mkdir -p "${CADDY_CONFIG_DIR}"
-    local log_block=""
+    
+    # 構建全局日誌配置
+    local global_log_block=""
     if [[ ! "$log_mode" =~ ^[yY]$ ]]; then
-        log_block=$(cat <<-LOG
+        global_log_block=$(cat <<-'GLOBALLOG'
+
+    # 全局日誌配置
     log {
         output stderr
         level  ERROR
     }
-LOG
+GLOBALLOG
 )
     fi
-    cat > "${CADDY_CONFIG_FILE}" << EOF
+    
+    # 開始生成 Caddyfile
+    cat > "${CADDY_CONFIG_FILE}" <<EOF
+# 全局選項塊
 {
+    # 全局配置 ACME 證書申請郵箱
     email ${email}
+${global_log_block}
+
+    # 服務器協議設置 (一個務實的選擇，可根據環境移除)
+    servers {
+        protocols h1 h2
+    }
 }
 
-${domain} {
-${log_block}
-    respond "服務正在運行。" 200
+# 主要網站服務
+${primary_domain} {
+    # 反向代理到後端 app，並傳遞必要的頭部信息以確保兼容性
+    reverse_proxy ${backend_service} {
+        header_up Host {host}
+        header_up X-Real-IP {remote}
+        header_up X-Forwarded-For {remote}
+        header_up X-Forwarded-Proto {scheme}
+    }
 }
 EOF
-    log INFO "已為域名 ${domain} 建立 Caddyfile 設定檔。";
+
+    # 如果提供了代理偽裝域名，添加配置
+    if [ -n "$proxy_domain" ]; then
+        cat >> "${CADDY_CONFIG_FILE}" <<EOF
+
+# 代理偽裝服務 (作為主站的鏡像或別名)
+${proxy_domain} {
+    # 將流量代理到主站，並正確設置 Host 頭以避免循環
+    reverse_proxy https://${primary_domain} {
+        header_up Host {upstream_hostport}
+    }
+}
+EOF
+    fi
+    
+    log INFO "已為域名 ${primary_domain}$([ -n "$proxy_domain" ] && echo " 和 ${proxy_domain}") 建立 Caddyfile 設定檔。"
 }
 
 # 生成 Hysteria 設定檔
 generate_hysteria_config() {
-    local domain="$1" password="$2" log_mode="$3"
+    local domain="$1" 
+    local password="$2" 
+    local log_mode="$3"
+    
     mkdir -p "${HYSTERIA_CONFIG_DIR}"
-    local log_level="error"; if [[ "$log_mode" =~ ^[yY]$ ]]; then log_level="info"; fi
-    cat > "${HYSTERIA_CONFIG_FILE}" << EOF
+    local log_level="error"
+    if [[ "$log_mode" =~ ^[yY]$ ]]; then 
+        log_level="info"
+    fi
+    
+    # 動態檢測證書路徑
+    local cert_path_info
+    cert_path_info=$(detect_cert_path "$domain")
+    local cert_path="${cert_path_info%%|*}"
+    local key_path="${cert_path_info##*|}"
+    
+    cat > "${HYSTERIA_CONFIG_FILE}" <<EOF
 listen: :443
 logLevel: ${log_level}
 auth:
@@ -158,8 +276,8 @@ auth:
 # 注意：以下證書路徑基於 Caddy 使用 Let's Encrypt 作為 ACME 簽發機構。
 # 如果 Caddy 自動切換到 ZeroSSL 等其他機構，此路徑可能需要手動更新。
 tls:
-  cert: /data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${domain}/${domain}.crt
-  key: /data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${domain}/${domain}.key
+  cert: ${cert_path}
+  key: ${key_path}
 outbounds:
   - name: direct
     type: direct
@@ -179,7 +297,7 @@ acl:
     - direct(suffix:githubusercontent.com)
     - warp(all)
 EOF
-    log INFO "Hysteria 的 config.yaml 已建立，日誌級別設定為 '${log_level}'。";
+    log INFO "Hysteria 的 config.yaml 已建立，日誌級別設定為 '${log_level}'，使用證書: ${cert_path}";
 }
 
 # 管理 Caddy
@@ -193,14 +311,81 @@ manage_caddy() {
             case "$choice" in
                 1)
                     log INFO "--- 正在安裝 Caddy ---"
-                    read -p "請輸入 Caddy 將要管理的域名 (必須指向本機IP): " DOMAIN < /dev/tty
-                    read -p "請輸入您的郵箱 (用於SSL證書申請與續期通知): " EMAIL < /dev/tty
-                    if [ -z "$DOMAIN" ] || [ -z "$EMAIL" ]; then log ERROR "域名和郵箱不能為空。"; press_any_key; continue; fi
+                    
+                    # 輸入主域名並驗證
+                    while true; do
+                        read -p "請輸入主域名（用於主要服務，必須指向本機IP）: " PRIMARY_DOMAIN < /dev/tty
+                        if [ -z "$PRIMARY_DOMAIN" ]; then
+                            log ERROR "主域名不能為空。"
+                            continue
+                        fi
+                        if validate_domain "$PRIMARY_DOMAIN"; then
+                            break
+                        fi
+                    done
+                    
+                    # 輸入郵箱並驗證
+                    while true; do
+                        read -p "請輸入您的郵箱（用於SSL證書申請與續期通知）: " EMAIL < /dev/tty
+                        if [ -z "$EMAIL" ]; then
+                            log ERROR "郵箱不能為空。"
+                            continue
+                        fi
+                        if validate_email "$EMAIL"; then
+                            break
+                        fi
+                    done
+                    
+                    # 輸入後端服務地址並驗證
+                    read -p "請輸入後端服務地址（格式: hostname:port，例如 app:80）[預設: app:80]: " BACKEND_SERVICE < /dev/tty
+                    BACKEND_SERVICE=${BACKEND_SERVICE:-app:80}
+                    if ! validate_backend_service "$BACKEND_SERVICE"; then
+                        log ERROR "後端服務地址格式錯誤，安裝中止。"
+                        press_any_key
+                        continue
+                    fi
+                    
+                    # 輸入代理偽裝域名（強制必填）
+                    while true; do
+                        read -p "請輸入代理域名（必須指向本機IP）: " PROXY_DOMAIN < /dev/tty
+                        if [ -z "$PROXY_DOMAIN" ]; then
+                            log ERROR "代理域名不能為空。"
+                            continue
+                        fi
+                        if validate_domain "$PROXY_DOMAIN"; then
+                            break
+                        fi
+                    done
+                    
+                    
+                    # 詢問日誌模式
                     read -p "是否為 Caddy 啟用詳細日誌？(用於排錯，預設為否) (y/N): " LOG_MODE < /dev/tty
-                    generate_caddy_config "$DOMAIN" "$EMAIL" "$LOG_MODE"
+                    
+                    # 生成配置文件
+                    generate_caddy_config "$PRIMARY_DOMAIN" "$EMAIL" "$LOG_MODE" "$PROXY_DOMAIN" "$BACKEND_SERVICE"
+                    
+                    # 拉取最新镜像
+                    log INFO "正在拉取最新的 Caddy 镜像..."
+                    if docker pull "${CADDY_IMAGE_NAME}"; then
+                        log INFO "Caddy 镜像已更新到最新版本"
+                    else
+                        log WARN "镜像拉取失败，将使用本地缓存版本"
+                    fi
+                    
+                    # 創建網路並部署容器
                     docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
-                    CADDY_CMD=(docker run -d --name "${CADDY_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -p 80:80/tcp -p 443:443/tcp -v "${CADDY_CONFIG_FILE}:/etc/caddy/Caddyfile:ro" -v "${CADDY_DATA_VOLUME}:/data" "${CADDY_IMAGE_NAME}")
-                    if "${CADDY_CMD[@]}"; then log INFO "Caddy 部署成功。正在後台申請證書，請稍候..."; else log ERROR "Caddy 部署失敗。"; fi
+                    docker network create "web-services" &>/dev/null
+                    
+                    # Caddy 連接到兩個網路：hwc-proxy-net 和 web-services
+                    CADDY_CMD=(docker run -d --name "${CADDY_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" --network "web-services" -p 80:80/tcp -p 443:443/tcp -v "${CADDY_CONFIG_FILE}:/etc/caddy/Caddyfile:ro" -v "${CADDY_DATA_VOLUME}:/data" "${CADDY_IMAGE_NAME}")
+                    
+                    if "${CADDY_CMD[@]}"; then 
+                        log INFO "Caddy 部署成功。正在後台申請證書，請稍候..." 
+                    else 
+                        log ERROR "Caddy 部署失敗，正在清理..."
+                        docker rm -f "${CADDY_CONTAINER_NAME}" 2>/dev/null
+                        rm -rf "${CADDY_CONFIG_DIR}"
+                    fi
                     press_any_key; break;;
                 0) break;;
                 *) log ERROR "無效輸入!"; sleep 1;;
@@ -242,6 +427,15 @@ manage_warp() {
             case "$choice" in
                 1)
                     log INFO "--- 正在安裝 WARP ---"
+                    
+                    # 拉取最新镜像
+                    log INFO "正在拉取最新的 WARP 镜像..."
+                    if docker pull "${WARP_IMAGE_NAME}"; then
+                        log INFO "WARP 镜像已更新到最新版本"
+                    else
+                        log WARN "镜像拉取失败，将使用本地缓存版本"
+                    fi
+                    
                     docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
                     WARP_CMD=(docker run -d --name "${WARP_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${WARP_VOLUME_PATH}:/var/lib/cloudflare-warp" --cap-add=MKNOD --cap-add=AUDIT_WRITE --cap-add=NET_ADMIN --device-cgroup-rule='c 10:200 rwm' --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv4.conf.all.src_valid_mark=1 "${WARP_IMAGE_NAME}")
                     if "${WARP_CMD[@]}"; then log INFO "WARP 部署成功。"; else log ERROR "WARP 部署失敗。"; fi
@@ -283,16 +477,91 @@ manage_hysteria() {
             read -p "請輸入選項: " choice < /dev/tty
             case "$choice" in
                 1)
-                    if ! container_exists "$CADDY_CONTAINER_NAME" || ! container_exists "$WARP_CONTAINER_NAME"; then log ERROR "依賴項缺失！請務必先安裝 Caddy 和 WARP。"; press_any_key; continue; fi
-                    local caddy_domain; caddy_domain=$(awk 'NR>1 && NF==2 && $2=="{" {print $1; exit}' "${CADDY_CONFIG_FILE}" 2>/dev/null)
+                    if ! container_exists "$CADDY_CONTAINER_NAME" || ! container_exists "$WARP_CONTAINER_NAME"; then 
+                        log ERROR "依賴項缺失！請務必先安裝 Caddy 和 WARP。"
+                        press_any_key
+                        continue
+                    fi
+                    
                     log INFO "--- 正在安裝 Hysteria ---"
+                    
+                    # 從 Caddyfile 中提取所有域名
+                    local available_domains
+                    available_domains=$(awk 'NR>1 && NF>=2 && $2=="{" {print $1}' "${CADDY_CONFIG_FILE}" 2>/dev/null | tr '\n' ' ')
+                    
+                    local HY_DOMAIN=""
+                    if [ -n "$available_domains" ]; then
+                        log INFO "檢測到以下域名: $available_domains"
+                        read -p "請選擇 Hysteria 使用的域名（用於證書）[預設: 第一個域名]: " HY_DOMAIN < /dev/tty
+                        if [ -z "$HY_DOMAIN" ]; then
+                            HY_DOMAIN=$(echo "$available_domains" | awk '{print $1}')
+                        fi
+                    else
+                        read -p "請輸入 Hysteria 使用的域名（必須與 Caddy 配置的域名一致）: " HY_DOMAIN < /dev/tty
+                    fi
+                    
+                    # 驗證域名
+                    if [ -z "$HY_DOMAIN" ]; then
+                        log ERROR "域名不能為空。"
+                        press_any_key
+                        continue
+                    fi
+                    if ! validate_domain "$HY_DOMAIN"; then
+                        press_any_key
+                        continue
+                    fi
+                    
+                    # 密碼生成/輸入邏輯
+                    read -p "是否手動輸入密碼？(預設為否，自動生成密碼) (y/N): " MANUAL_PASSWORD < /dev/tty
+                    
+                    if [[ "$MANUAL_PASSWORD" =~ ^[yY]$ ]]; then
+                        # 手動輸入密碼（顯示輸入）
+                        while true; do
+                            read -p "請為 Hysteria 設定一個連接密碼: " PASSWORD < /dev/tty
+                            if [ -z "$PASSWORD" ]; then
+                                log ERROR "密碼不能為空。"
+                                continue
+                            fi
+                            if [[ ${#PASSWORD} -lt 12 ]]; then
+                                log WARN "密碼長度建議至少 12 個字符以提高安全性。"
+                            fi
+                            log INFO "您設定的密碼為: ${FontColor_Yellow}${PASSWORD}${FontColor_Suffix}"
+                            break
+                        done
+                    else
+                        # 自動生成密碼
+                        PASSWORD=$(generate_random_password)
+                        log INFO "已自動生成連接密碼: ${FontColor_Yellow}${PASSWORD}${FontColor_Suffix}"
+                        log WARN "請妥善保存此密碼，稍後需要配置客戶端時使用。"
+                    fi
+                    
+                    # 詢問日誌模式
                     read -p "是否為 Hysteria 啟用詳細日誌？(預設為否) (y/N): " LOG_MODE < /dev/tty
-                    if [ -n "$caddy_domain" ]; then read -p "請輸入您的域名 [預設: ${caddy_domain}]: " DOMAIN < /dev/tty; DOMAIN=${DOMAIN:-$caddy_domain}; else read -p "請輸入您的域名 (必須與Caddy設定的域名一致): " DOMAIN < /dev/tty; fi
-                    read -p "請為 Hysteria 設定一個連接密碼: " PASSWORD < /dev/tty
-                    if [ -z "$DOMAIN" ] || [ -z "$PASSWORD" ]; then log ERROR "域名和密碼為必填項。"; press_any_key; continue; fi
-                    generate_hysteria_config "$DOMAIN" "$PASSWORD" "$LOG_MODE"
-                    HY_CMD=(docker run -d --name "${HYSTERIA_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" --memory=256m -v "${HYSTERIA_CONFIG_FILE}:/config.yaml:ro" -v "${CADDY_DATA_VOLUME}:/data:ro" -p 443:443/udp "${HYSTERIA_IMAGE_NAME}" server -c /config.yaml)
-                    if "${HY_CMD[@]}"; then log INFO "Hysteria 部署成功。"; else log ERROR "Hysteria 部署失敗。"; fi
+                    
+                    # 拉取最新镜像
+                    log INFO "正在拉取最新的 Hysteria 镜像..."
+                    if docker pull "${HYSTERIA_IMAGE_NAME}"; then
+                        log INFO "Hysteria 镜像已更新到最新版本"
+                    else
+                        log WARN "镜像拉取失败，将使用本地缓存版本"
+                    fi
+                    
+                    # 生成配置並部署
+                    generate_hysteria_config "$HY_DOMAIN" "$PASSWORD" "$LOG_MODE"
+                    HY_CMD=(docker run -d --name "${HYSTERIA_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" --memory=512m -v "${HYSTERIA_CONFIG_FILE}:/config.yaml:ro" -v "${CADDY_DATA_VOLUME}:/data:ro" -p 443:443/udp "${HYSTERIA_IMAGE_NAME}" server -c /config.yaml)
+                    
+                    if "${HY_CMD[@]}"; then 
+                        log INFO "Hysteria 部署成功。"
+                        # 等待容器啟動並檢查證書
+                        sleep 3
+                        if docker logs "${HYSTERIA_CONTAINER_NAME}" 2>&1 | grep -qi "error\|failed"; then
+                            log WARN "Hysteria 容器可能遇到問題，請檢查日誌: docker logs ${HYSTERIA_CONTAINER_NAME}"
+                        fi
+                    else 
+                        log ERROR "Hysteria 部署失敗，正在清理..."
+                        docker rm -f "${HYSTERIA_CONTAINER_NAME}" 2>/dev/null
+                        rm -rf "${HYSTERIA_CONFIG_DIR}"
+                    fi
                     press_any_key; break;;
                 0) break;;
                 *) log ERROR "無效輸入!"; sleep 1;;
@@ -337,6 +606,14 @@ manage_adguard() {
                     WEB_PORT=${WEB_PORT:-3000}
                     log WARN "DNS 服務將使用 53 端口。請確保主機的 53 端口未被 systemd-resolved 等服務占用。"
                     log WARN "如果 53 端口衝突導致安裝失敗，請先停用主機的 DNS 服務再重試。"
+                    
+                    # 拉取最新镜像
+                    log INFO "正在拉取最新的 AdGuard Home 镜像..."
+                    if docker pull "${ADGUARD_IMAGE_NAME}"; then
+                        log INFO "AdGuard Home 镜像已更新到最新版本"
+                    else
+                        log WARN "镜像拉取失败，将使用本地缓存版本"
+                    fi
                     
                     mkdir -p "${ADGUARD_CONFIG_DIR}" "${ADGUARD_WORK_DIR}"
                     docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
