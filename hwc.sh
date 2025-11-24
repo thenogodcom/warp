@@ -270,6 +270,12 @@ generate_hysteria_config() {
     cat > "${HYSTERIA_CONFIG_FILE}" <<EOF
 listen: :443
 logLevel: ${log_level}
+# DNS 配置：優先使用 AdGuard Home 進行廣告過濾
+# 注意：此配置作為應用層 DNS，配合 Docker --dns 參數實現雙重保障
+resolvePreference: IPv4
+dns:
+  server: udp://${ADGUARD_CONTAINER_NAME}:53
+  timeout: 4s
 auth:
   type: password
   password: ${password}
@@ -377,10 +383,16 @@ manage_caddy() {
                     docker network create "web-services" &>/dev/null
                     
                     # Caddy 連接到兩個網路：hwc-proxy-net 和 web-services
-                    CADDY_CMD=(docker run -d --name "${CADDY_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" --network "web-services" -p 80:80/tcp -p 443:443/tcp -v "${CADDY_CONFIG_FILE}:/etc/caddy/Caddyfile:ro" -v "${CADDY_DATA_VOLUME}:/data" "${CADDY_IMAGE_NAME}")
+                    # 注意：docker run 只能指定一個 --network，第二個網絡需使用 docker network connect
+                    CADDY_CMD=(docker run -d --name "${CADDY_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -p 80:80/tcp -p 443:443/tcp -v "${CADDY_CONFIG_FILE}:/etc/caddy/Caddyfile:ro" -v "${CADDY_DATA_VOLUME}:/data" "${CADDY_IMAGE_NAME}")
                     
-                    if "${CADDY_CMD[@]}"; then 
-                        log INFO "Caddy 部署成功。正在後台申請證書，請稍候..." 
+                    if "${CADDY_CMD[@]}"; then
+                        # 連接到第二個網絡（用於訪問後端服務）
+                        if docker network connect "web-services" "${CADDY_CONTAINER_NAME}" 2>/dev/null; then
+                            log INFO "Caddy 部署成功，已連接到 ${SHARED_NETWORK_NAME} 和 web-services 網絡。正在後台申請證書，請稍候..."
+                        else
+                            log WARN "Caddy 已啟動，但連接 web-services 網絡失敗，後端服務可能無法訪問。"
+                        fi
                     else 
                         log ERROR "Caddy 部署失敗，正在清理..."
                         docker rm -f "${CADDY_CONTAINER_NAME}" 2>/dev/null
@@ -548,12 +560,50 @@ manage_hysteria() {
                     
                     # 生成配置並部署
                     generate_hysteria_config "$HY_DOMAIN" "$PASSWORD" "$LOG_MODE"
-                    HY_CMD=(docker run -d --name "${HYSTERIA_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" --memory=512m -v "${HYSTERIA_CONFIG_FILE}:/config.yaml:ro" -v "${CADDY_DATA_VOLUME}:/data:ro" -p 443:443/udp "${HYSTERIA_IMAGE_NAME}" server -c /config.yaml)
+                    
+                    # --- AdGuard DNS 注入邏輯 ---
+                    local DNS_ARG=""
+                    if container_exists "$ADGUARD_CONTAINER_NAME"; then
+                        # 檢測 AdGuard 是否運行
+                        if [ "$(docker inspect -f '{{.State.Running}}' "$ADGUARD_CONTAINER_NAME" 2>/dev/null)" = "true" ]; then
+                            # 獲取 AdGuard IP 地址
+                            local AG_IP
+                            AG_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$ADGUARD_CONTAINER_NAME" 2>/dev/null | awk '{print $1}')
+                            
+                            if [ -n "$AG_IP" ]; then
+                                DNS_ARG="--dns=${AG_IP}"
+                                log INFO "檢測到 AdGuard Home (IP: ${AG_IP})，將強制 Hysteria 使用此 DNS 進行廣告過濾。"
+                            else
+                                log WARN "無法獲取 AdGuard Home IP，Hysteria 將使用系統預設 DNS。"
+                            fi
+                        else
+                            log WARN "AdGuard Home 容器未運行，Hysteria 將使用系統預設 DNS。"
+                        fi
+                    else
+                        log WARN "未安裝 AdGuard Home，Hysteria 將使用系統預設 DNS（無廣告過濾）。"
+                        log INFO "提示：您可以先安裝 AdGuard Home，然後重新部署 Hysteria 以啟用廣告過濾。"
+                    fi
+                    # --- DNS 注入結束 ---
+                    
+                    # 部署 Hysteria 容器（含 DNS 配置）
+                    HY_CMD=(docker run -d --name "${HYSTERIA_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" ${DNS_ARG} --memory=512m -v "${HYSTERIA_CONFIG_FILE}:/config.yaml:ro" -v "${CADDY_DATA_VOLUME}:/data:ro" -p 443:443/udp "${HYSTERIA_IMAGE_NAME}" server -c /config.yaml)
                     
                     if "${HY_CMD[@]}"; then 
                         log INFO "Hysteria 部署成功。"
-                        # 等待容器啟動並檢查證書
+                        
+                        # 驗證 DNS 配置是否生效
                         sleep 3
+                        if [ -n "$DNS_ARG" ]; then
+                            local resolv_conf
+                            resolv_conf=$(docker exec "${HYSTERIA_CONTAINER_NAME}" cat /etc/resolv.conf 2>/dev/null | grep "nameserver")
+                            if echo "$resolv_conf" | grep -q "${AG_IP}"; then
+                                log INFO "✓ DNS 注入成功：Hysteria 已配置使用 AdGuard Home (${AG_IP})"
+                            else
+                                log WARN "DNS 注入可能未完全生效，請檢查：docker exec ${HYSTERIA_CONTAINER_NAME} cat /etc/resolv.conf"
+                            fi
+                        fi
+                        
+                        # 檢查容器日誌是否有錯誤
                         if docker logs "${HYSTERIA_CONTAINER_NAME}" 2>&1 | grep -qi "error\|failed"; then
                             log WARN "Hysteria 容器可能遇到問題，請檢查日誌: docker logs ${HYSTERIA_CONTAINER_NAME}"
                         fi
