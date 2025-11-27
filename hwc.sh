@@ -740,18 +740,102 @@ clear_all_logs() {
     log INFO "所有服務日誌已清空。"
 }
 
-# 重啟所有正在運行的服務
+# 檢查容器是否就緒
+wait_for_container_ready() {
+    local container="$1"
+    local service_name="$2"
+    local max_wait=30
+    
+    log INFO "等待 ${service_name} 就緒..."
+    for i in $(seq 1 $max_wait); do
+        # 檢查容器是否在運行
+        if [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" != "true" ]; then
+            sleep 1
+            continue
+        fi
+        
+        # 根據不同服務類型進行健康檢查
+        case "$container" in
+            "$ADGUARD_CONTAINER_NAME")
+                # 檢查 DNS 端口 53
+                if docker exec "$container" sh -c "command -v nc >/dev/null && nc -z -w1 localhost 53" 2>/dev/null || \
+                   docker exec "$container" sh -c "command -v timeout >/dev/null && timeout 1 nc -z localhost 53" 2>/dev/null; then
+                    log INFO "✓ ${service_name} DNS 服務已就緒"
+                    return 0
+                fi
+                ;;
+            "$CADDY_CONTAINER_NAME")
+                # 檢查 HTTP 端口 80
+                if docker exec "$container" sh -c "command -v nc >/dev/null && nc -z -w1 localhost 80" 2>/dev/null || \
+                   curl -sf -m 2 http://localhost:80 >/dev/null 2>&1; then
+                    log INFO "✓ ${service_name} HTTP 服務已就緒"
+                    return 0
+                fi
+                ;;
+            "$WARP_CONTAINER_NAME")
+                # 檢查 SOCKS5 端口 8008
+                if docker exec "$container" sh -c "command -v nc >/dev/null && nc -z -w1 localhost 8008" 2>/dev/null; then
+                    log INFO "✓ ${service_name} 代理服務已就緒"
+                    return 0
+                fi
+                ;;
+            "$HYSTERIA_CONTAINER_NAME")
+                # 檢查 UDP 443 端口（較難檢測，使用日誌檢查）
+                if docker logs "$container" 2>&1 | tail -n 20 | grep -qiE "server up and running|listening on"; then
+                    log INFO "✓ ${service_name} 服務已就緒"
+                    return 0
+                fi
+                ;;
+        esac
+        
+        sleep 1
+    done
+    
+    log WARN "✗ ${service_name} 未能在 ${max_wait} 秒內就緒，但將繼續下一步"
+    return 1
+}
+
+# 重啟所有正在運行的服務（智能時序控制）
 restart_all_services() {
-    log INFO "正在重啟所有正在運行的容器..."
+    log INFO "正在按依賴順序重啟所有正在運行的容器..."
+    
+    # 定義啟動順序：AdGuard Home -> Caddy -> WARP -> Hysteria
+    # 這個順序確保依賴服務先啟動
+    local restart_order=(
+        "$ADGUARD_CONTAINER_NAME:AdGuard Home (DNS)"
+        "$CADDY_CONTAINER_NAME:Caddy (SSL/HTTP)"
+        "$WARP_CONTAINER_NAME:WARP (代理)"
+        "$HYSTERIA_CONTAINER_NAME:Hysteria (主服務)"
+    )
+    
     local restarted=0
-    for container in "$CADDY_CONTAINER_NAME" "$WARP_CONTAINER_NAME" "$HYSTERIA_CONTAINER_NAME" "$ADGUARD_CONTAINER_NAME"; do
+    for item in "${restart_order[@]}"; do
+        local container="${item%%:*}"
+        local service_name="${item#*:}"
+        
+        # 檢查容器是否存在且正在運行
         if container_exists "$container" && [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" = "true" ]; then
-            log INFO "正在重啟 ${container}..."
-            docker restart "$container" &>/dev/null
-            restarted=$((restarted + 1))
+            log INFO "正在重啟 ${service_name}..."
+            
+            if docker restart "$container" &>/dev/null; then
+                restarted=$((restarted + 1))
+                
+                # 等待容器就緒後再繼續下一個
+                wait_for_container_ready "$container" "$service_name"
+                
+                # 給容器額外的穩定時間
+                sleep 2
+            else
+                log ERROR "✗ ${service_name} 重啟失敗"
+            fi
         fi
     done
-    if [ "$restarted" -eq 0 ]; then log WARN "沒有正在運行的容器可供重啟。"; else log INFO "所有正在運行的容器已成功發出重啟命令。"; fi
+    
+    if [ "$restarted" -eq 0 ]; then 
+        log WARN "沒有正在運行的容器可供重啟。"
+    else 
+        log INFO "已成功重啟 ${restarted} 個容器，所有服務已按順序啟動完成。"
+    fi
 }
 
 # 組合函數：清理日誌並重啟服務
