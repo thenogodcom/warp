@@ -2,7 +2,7 @@
 #
 # Description: Ultimate All-in-One Manager for Caddy, WARP, Hysteria & AdGuard Home with self-installing shortcut.
 # Author: Your Name (Inspired by P-TERX)
-# Version: 5.6.1 (Enhanced Health Check Edition)
+# Version: 5.6.2 (WARP Auto-Remediation Edition)
 
 # --- 第1節：全域設定與定義 ---
 
@@ -656,77 +656,6 @@ manage_hysteria() {
     fi
 }
 
-# 管理 AdGuard Home
-manage_adguard() {
-    if ! container_exists "$ADGUARD_CONTAINER_NAME"; then
-        while true; do
-            clear; log INFO "--- 管理 AdGuard Home (未安裝) ---"
-            echo " 1. 安裝 AdGuard Home (DNS 廣告過濾器)"
-            echo " 0. 返回主選單"
-            read -p "請輸入選項: " choice < /dev/tty
-            case "$choice" in
-                1)
-                    log INFO "--- 正在安裝 AdGuard Home ---"
-                    read -p "請為 AdGuard Home 的 Web 管理界面設定一個端口 [預設: 3000]: " WEB_PORT < /dev/tty
-                    WEB_PORT=${WEB_PORT:-3000}
-                    log WARN "DNS 服務將使用 53 端口。請確保主機的 53 端口未被 systemd-resolved 等服務占用。"
-                    log WARN "如果 53 端口衝突導致安裝失敗，請先停用主機的 DNS 服務再重試。"
-                    
-                    # 強制拉取最新鏡像（不使用緩存）
-                    log INFO "正在拉取最新的 AdGuard Home 鏡像..."
-                    if ! docker pull "${ADGUARD_IMAGE_NAME}"; then
-                        log ERROR "AdGuard Home 鏡像拉取失敗，安裝中止。正在清除本地鏡像緩存..."
-                        docker rmi "${ADGUARD_IMAGE_NAME}" &>/dev/null
-                        log INFO "本地鏡像緩存已清除。請檢查網路連線或鏡像名稱是否正確。"
-                        press_any_key
-                        continue
-                    fi
-                    log INFO "AdGuard Home 鏡像已成功拉取。"
-                    
-                    mkdir -p "${ADGUARD_CONFIG_DIR}" "${ADGUARD_WORK_DIR}"
-                    docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
-
-                    # --- 已修改 ---
-                    # 移除了 -p 53:53/tcp 和 -p 53:53/udp 
-                    AG_CMD=(docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p "${WEB_PORT}:3000/tcp" "${ADGUARD_IMAGE_NAME}")
-
-                    if "${AG_CMD[@]}"; then
-                        log INFO "AdGuard Home 部署成功。"
-                        log INFO "首次安裝後，請訪問 http://<您的伺服器IP>:${WEB_PORT} 進行初始化設定。"
-                    else
-                        log ERROR "AdGuard Home 部署失敗。請檢查端口是否衝突。"
-                    fi
-                    press_any_key; break;;
-                0) break;;
-                *) log ERROR "無效輸入!"; sleep 1;;
-            esac
-        done
-    else
-        while true; do
-            clear; log INFO "--- 管理 AdGuard Home (已安裝) ---"
-            echo " 1. 查看日誌"; echo " 2. 重啟 AdGuard Home 容器"; echo " 3. 卸載 AdGuard Home"; echo " 0. 返回主選單"
-            read -p "請輸入選項: " choice < /dev/tty
-            case "$choice" in
-                1) docker logs -f "$ADGUARD_CONTAINER_NAME"; press_any_key;;
-                2) log INFO "正在重啟 AdGuard Home 容器..."; docker restart "$ADGUARD_CONTAINER_NAME"; sleep 2;;
-                3)
-                    read -p "確定要卸載 AdGuard Home 嗎? (y/N): " uninstall_choice < /dev/tty
-                    if [[ "$uninstall_choice" =~ ^[yY]$ ]]; then
-                        docker stop "${ADGUARD_CONTAINER_NAME}" &>/dev/null && docker rm "${ADGUARD_CONTAINER_NAME}" &>/dev/null
-                        read -p "是否刪除 AdGuard Home 的所有設定檔和數據？(y/N): " del_choice < /dev/tty
-                        if [[ "$del_choice" =~ ^[yY]$ ]]; then rm -rf "${APP_BASE_DIR}/adguard"; log INFO "AdGuard Home 的設定和數據已刪除。"; fi
-                        log INFO "正在清除 AdGuard Home 鏡像緩存..."
-                        docker rmi "${ADGUARD_IMAGE_NAME}" &>/dev/null && log INFO "AdGuard Home 鏡像已刪除。" || log WARN "AdGuard Home 鏡像刪除失敗或不存在。"
-                        log INFO "AdGuard Home 已卸載。";
-                    fi
-                    press_any_key; break;;
-                0) break;;
-                *) log ERROR "無效輸入!"; sleep 1;;
-            esac
-        done
-    fi
-}
-
 # (非互動式) 清除所有服務的日誌
 clear_all_logs() {
     log INFO "正在清除所有已安裝服務容器的內部日誌..."
@@ -741,10 +670,11 @@ clear_all_logs() {
 }
 
 # 檢查容器是否就緒 (強化版：使用功能性測試)
+# 參數: 1.容器名 2.服務顯示名 3.最大等待時間(秒)
 wait_for_container_ready() {
     local container="$1"
     local service_name="$2"
-    local max_wait=30
+    local max_wait="${3:-30}" # 預設等待 30 秒，可被參數覆蓋
     
     log INFO "等待 ${service_name} 就緒..."
     for i in $(seq 1 $max_wait); do
@@ -757,7 +687,7 @@ wait_for_container_ready() {
         # 根據不同服務類型進行功能性健康檢查
         case "$container" in
             "$ADGUARD_CONTAINER_NAME")
-                # 檢查 DNS 解析能力 (功能測試)
+                # 檢查 DNS 解析能力
                 if docker exec "$container" sh -c "timeout 1 nslookup google.com 127.0.0.1 >/dev/null 2>&1" 2>/dev/null; then
                     echo "" # 換行
                     log INFO "✓ ${service_name} DNS 解析測試通過"
@@ -765,7 +695,7 @@ wait_for_container_ready() {
                 fi
                 ;;
             "$CADDY_CONTAINER_NAME")
-                # 檢查 HTTP 端口 80 (連接測試)
+                # 檢查 HTTP 端口 80
                 if curl -sf -m 2 http://localhost:80 >/dev/null 2>&1; then
                     echo ""
                     log INFO "✓ ${service_name} HTTP 服務已就緒"
@@ -790,22 +720,20 @@ wait_for_container_ready() {
                 ;;
         esac
         
-        # 顯示進度條，避免使用者以為卡死
+        # 顯示進度條
         echo -ne "."
         sleep 1
     done
     
     echo "" # 換行
-    log WARN "✗ ${service_name} 未能在 ${max_wait} 秒內通過功能測試，但將繼續下一步"
-    return 1
+    return 1 # 返回失敗狀態
 }
 
-# 重啟所有正在運行的服務（智能時序控制）
+# 重啟所有正在運行的服務（智能時序控制 + WARP 自動修復）
 restart_all_services() {
     log INFO "正在按依賴順序重啟所有正在運行的容器..."
     
     # 定義啟動順序：AdGuard Home -> Caddy -> WARP -> Hysteria
-    # 這個順序確保依賴服務先啟動
     local restart_order=(
         "$ADGUARD_CONTAINER_NAME:AdGuard Home (DNS)"
         "$CADDY_CONTAINER_NAME:Caddy (SSL/HTTP)"
@@ -822,16 +750,46 @@ restart_all_services() {
         if container_exists "$container" && [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" = "true" ]; then
             log INFO "正在重啟 ${service_name}..."
             
-            if docker restart "$container" &>/dev/null; then
-                restarted=$((restarted + 1))
+            # --- WARP 特殊處理邏輯 ---
+            if [ "$container" == "$WARP_CONTAINER_NAME" ]; then
+                docker restart "$container" &>/dev/null
                 
-                # 等待容器就緒後再繼續下一個
-                wait_for_container_ready "$container" "$service_name"
-                
-                # 給容器額外的穩定時間
-                sleep 2
+                # 第一次嘗試：等待 30 秒
+                if wait_for_container_ready "$container" "$service_name" 30; then
+                     restarted=$((restarted + 1))
+                     sleep 2
+                else
+                     # 第一次失敗，觸發自動修復邏輯
+                     log WARN "✗ ${service_name} 未能在 30 秒內通過功能測試，將卸載重裝 ${service_name}，請耐心等待..."
+                     
+                     # 卸載 WARP
+                     docker stop "$container" &>/dev/null
+                     docker rm "$container" &>/dev/null
+                     
+                     # 重裝 WARP (使用預定義的安裝參數)
+                     # 注意：這裡複製了 manage_warp 中的安裝命令，確保參數一致
+                     docker run -d --name "${WARP_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${WARP_VOLUME_PATH}:/var/lib/cloudflare-warp" --cap-add=MKNOD --cap-add=AUDIT_WRITE --cap-add=NET_ADMIN --device-cgroup-rule='c 10:200 rwm' --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv4.conf.all.src_valid_mark=1 "${WARP_IMAGE_NAME}" &>/dev/null
+                     
+                     # 第二次嘗試：等待 60 秒
+                     if wait_for_container_ready "$container" "$service_name" 60; then
+                        restarted=$((restarted + 1))
+                        sleep 2
+                     else
+                        log WARN "✗ ${service_name} 未能在 60 秒內通過功能測試，但將繼續下一步"
+                     fi
+                fi
+            # --- 其他服務標準邏輯 ---
             else
-                log ERROR "✗ ${service_name} 重啟失敗"
+                if docker restart "$container" &>/dev/null; then
+                    restarted=$((restarted + 1))
+                    # 等待容器就緒後再繼續下一個
+                    if ! wait_for_container_ready "$container" "$service_name" 30; then
+                        log WARN "✗ ${service_name} 未能在 30 秒內就緒，但將繼續下一步"
+                    fi
+                    sleep 2
+                else
+                    log ERROR "✗ ${service_name} 重啟失敗"
+                fi
             fi
         fi
     done
@@ -893,7 +851,7 @@ start_menu() {
     while true; do
         check_all_status
         clear
-        echo -e "\n${FontColor_Purple}Caddy + WARP + Hysteria + AdGuard 終極管理腳本${FontColor_Suffix} (v5.6.1)"
+        echo -e "\n${FontColor_Purple}Caddy + WARP + Hysteria + AdGuard 終極管理腳本${FontColor_Suffix} (v5.6.2)"
         echo -e "  快捷命令: ${FontColor_Yellow}hwc${FontColor_Suffix}"
         echo -e "  設定目錄: ${FontColor_Yellow}${APP_BASE_DIR}${FontColor_Suffix}"
         echo -e " --------------------------------------------------"
