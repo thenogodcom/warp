@@ -2,7 +2,7 @@
 #
 # Description: Ultimate All-in-One Manager for Caddy, WARP, Hysteria & AdGuard Home with self-installing shortcut.
 # Author: Your Name (Inspired by P-TERX)
-# Version: 5.6.0 (AdGuard Home Integration Edition)
+# Version: 5.6.1 (Enhanced Health Check Edition)
 
 # --- 第1節：全域設定與定義 ---
 
@@ -740,7 +740,7 @@ clear_all_logs() {
     log INFO "所有服務日誌已清空。"
 }
 
-# 檢查容器是否就緒
+# 檢查容器是否就緒 (強化版：使用功能性測試)
 wait_for_container_ready() {
     local container="$1"
     local service_name="$2"
@@ -754,44 +754,49 @@ wait_for_container_ready() {
             continue
         fi
         
-        # 根據不同服務類型進行健康檢查
+        # 根據不同服務類型進行功能性健康檢查
         case "$container" in
             "$ADGUARD_CONTAINER_NAME")
-                # 檢查 DNS 端口 53
-                if docker exec "$container" sh -c "command -v nc >/dev/null && nc -z -w1 localhost 53" 2>/dev/null || \
-                   docker exec "$container" sh -c "command -v timeout >/dev/null && timeout 1 nc -z localhost 53" 2>/dev/null; then
-                    log INFO "✓ ${service_name} DNS 服務已就緒"
+                # 檢查 DNS 解析能力 (功能測試)
+                if docker exec "$container" sh -c "timeout 1 nslookup google.com 127.0.0.1 >/dev/null 2>&1" 2>/dev/null; then
+                    echo "" # 換行
+                    log INFO "✓ ${service_name} DNS 解析測試通過"
                     return 0
                 fi
                 ;;
             "$CADDY_CONTAINER_NAME")
-                # 檢查 HTTP 端口 80
-                if docker exec "$container" sh -c "command -v nc >/dev/null && nc -z -w1 localhost 80" 2>/dev/null || \
-                   curl -sf -m 2 http://localhost:80 >/dev/null 2>&1; then
+                # 檢查 HTTP 端口 80 (連接測試)
+                if curl -sf -m 2 http://localhost:80 >/dev/null 2>&1; then
+                    echo ""
                     log INFO "✓ ${service_name} HTTP 服務已就緒"
                     return 0
                 fi
                 ;;
             "$WARP_CONTAINER_NAME")
-                # 檢查 SOCKS5 端口 8008
-                if docker exec "$container" sh -c "command -v nc >/dev/null && nc -z -w1 localhost 8008" 2>/dev/null; then
-                    log INFO "✓ ${service_name} 代理服務已就緒"
+                # 檢查 SOCKS5 代理連通性 (關鍵：確認 VPN 隧道已打通至 Cloudflare)
+                if docker exec "$container" curl -x socks5h://127.0.0.1:8008 -s --connect-timeout 2 https://www.cloudflare.com/cdn-cgi/trace >/dev/null 2>&1; then
+                    echo ""
+                    log INFO "✓ ${service_name} 隧道連通性測試通過"
                     return 0
                 fi
                 ;;
             "$HYSTERIA_CONTAINER_NAME")
-                # 檢查 UDP 443 端口（較難檢測，使用日誌檢查）
+                # 檢查日誌關鍵字
                 if docker logs "$container" 2>&1 | tail -n 20 | grep -qiE "server up and running|listening on"; then
+                    echo ""
                     log INFO "✓ ${service_name} 服務已就緒"
                     return 0
                 fi
                 ;;
         esac
         
+        # 顯示進度條，避免使用者以為卡死
+        echo -ne "."
         sleep 1
     done
     
-    log WARN "✗ ${service_name} 未能在 ${max_wait} 秒內就緒，但將繼續下一步"
+    echo "" # 換行
+    log WARN "✗ ${service_name} 未能在 ${max_wait} 秒內通過功能測試，但將繼續下一步"
     return 1
 }
 
@@ -888,7 +893,7 @@ start_menu() {
     while true; do
         check_all_status
         clear
-        echo -e "\n${FontColor_Purple}Caddy + WARP + Hysteria + AdGuard 終極管理腳本${FontColor_Suffix} (v5.6.0)"
+        echo -e "\n${FontColor_Purple}Caddy + WARP + Hysteria + AdGuard 終極管理腳本${FontColor_Suffix} (v5.6.1)"
         echo -e "  快捷命令: ${FontColor_Yellow}hwc${FontColor_Suffix}"
         echo -e "  設定目錄: ${FontColor_Yellow}${APP_BASE_DIR}${FontColor_Suffix}"
         echo -e " --------------------------------------------------"
