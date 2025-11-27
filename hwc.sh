@@ -504,9 +504,9 @@ manage_hysteria() {
                     local HY_DOMAIN=""
                     if [ -n "$available_domains" ]; then
                         log INFO "檢測到以下域名: $available_domains"
-                        read -p "請選擇 Hysteria 使用的域名（用於證書）[預設: 第一個域名]: " HY_DOMAIN < /dev/tty
+                        read -p "請選擇 Hysteria 使用的域名（用於證書）[預設: 代理域名]: " HY_DOMAIN < /dev/tty
                         if [ -z "$HY_DOMAIN" ]; then
-                            HY_DOMAIN=$(echo "$available_domains" | awk '{print $1}')
+                            HY_DOMAIN=$(echo "$available_domains" | awk '{print $2}')
                         fi
                     else
                         read -p "請輸入 Hysteria 使用的域名（必須與 Caddy 配置的域名一致）: " HY_DOMAIN < /dev/tty
