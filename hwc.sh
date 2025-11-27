@@ -370,13 +370,16 @@ manage_caddy() {
                     # 生成配置文件
                     generate_caddy_config "$PRIMARY_DOMAIN" "$EMAIL" "$LOG_MODE" "$PROXY_DOMAIN" "$BACKEND_SERVICE"
                     
-                    # 拉取最新镜像
-                    log INFO "正在拉取最新的 Caddy 镜像..."
-                    if docker pull "${CADDY_IMAGE_NAME}"; then
-                        log INFO "Caddy 镜像已更新到最新版本"
-                    else
-                        log WARN "镜像拉取失败，将使用本地缓存版本"
+                    # 強制拉取最新鏡像（不使用緩存）
+                    log INFO "正在拉取最新的 Caddy 鏡像..."
+                    if ! docker pull "${CADDY_IMAGE_NAME}"; then
+                        log ERROR "Caddy 鏡像拉取失敗，安裝中止。正在清除本地鏡像緩存..."
+                        docker rmi "${CADDY_IMAGE_NAME}" &>/dev/null
+                        log INFO "本地鏡像緩存已清除。請檢查網路連線或鏡像名稱是否正確。"
+                        press_any_key
+                        continue
                     fi
+                    log INFO "Caddy 鏡像已成功拉取。"
                     
                     # 創建網路並部署容器
                     docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
@@ -419,6 +422,8 @@ manage_caddy() {
                         docker stop "${CADDY_CONTAINER_NAME}" &>/dev/null && docker rm "${CADDY_CONTAINER_NAME}" &>/dev/null
                         read -p "是否刪除 Caddy 的設定檔和數據卷(包含證書)？(y/N): " del_choice < /dev/tty
                         if [[ "$del_choice" =~ ^[yY]$ ]]; then rm -rf "${CADDY_CONFIG_DIR}"; docker volume rm "${CADDY_DATA_VOLUME}" &>/dev/null; log INFO "Caddy 的設定和數據已刪除。"; fi
+                        log INFO "正在清除 Caddy 鏡像緩存..."
+                        docker rmi "${CADDY_IMAGE_NAME}" &>/dev/null && log INFO "Caddy 鏡像已刪除。" || log WARN "Caddy 鏡像刪除失敗或不存在。"
                         log INFO "Caddy 已卸載。";
                     fi
                     press_any_key; break;;
@@ -440,13 +445,16 @@ manage_warp() {
                 1)
                     log INFO "--- 正在安裝 WARP ---"
                     
-                    # 拉取最新镜像
-                    log INFO "正在拉取最新的 WARP 镜像..."
-                    if docker pull "${WARP_IMAGE_NAME}"; then
-                        log INFO "WARP 镜像已更新到最新版本"
-                    else
-                        log WARN "镜像拉取失败，将使用本地缓存版本"
+                    # 強制拉取最新鏡像（不使用緩存）
+                    log INFO "正在拉取最新的 WARP 鏡像..."
+                    if ! docker pull "${WARP_IMAGE_NAME}"; then
+                        log ERROR "WARP 鏡像拉取失敗，安裝中止。正在清除本地鏡像緩存..."
+                        docker rmi "${WARP_IMAGE_NAME}" &>/dev/null
+                        log INFO "本地鏡像緩存已清除。請檢查網路連線或鏡像名稱是否正確。"
+                        press_any_key
+                        continue
                     fi
+                    log INFO "WARP 鏡像已成功拉取。"
                     
                     docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
                     WARP_CMD=(docker run -d --name "${WARP_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${WARP_VOLUME_PATH}:/var/lib/cloudflare-warp" --cap-add=MKNOD --cap-add=AUDIT_WRITE --cap-add=NET_ADMIN --device-cgroup-rule='c 10:200 rwm' --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv4.conf.all.src_valid_mark=1 "${WARP_IMAGE_NAME}")
@@ -470,6 +478,8 @@ manage_warp() {
                     if [[ "$uninstall_choice" =~ ^[yY]$ ]]; then
                         docker stop "${WARP_CONTAINER_NAME}" &>/dev/null && docker rm "${WARP_CONTAINER_NAME}" &>/dev/null
                         rm -rf "${WARP_VOLUME_PATH}"
+                        log INFO "正在清除 WARP 鏡像緩存..."
+                        docker rmi "${WARP_IMAGE_NAME}" &>/dev/null && log INFO "WARP 鏡像已刪除。" || log WARN "WARP 鏡像刪除失敗或不存在。"
                         log INFO "WARP 已卸載，本地數據已清除。";
                     fi
                     press_any_key; break;;
@@ -550,13 +560,16 @@ manage_hysteria() {
                     # 詢問日誌模式
                     read -p "是否為 Hysteria 啟用詳細日誌？(預設為否) (y/N): " LOG_MODE < /dev/tty
                     
-                    # 拉取最新镜像
-                    log INFO "正在拉取最新的 Hysteria 镜像..."
-                    if docker pull "${HYSTERIA_IMAGE_NAME}"; then
-                        log INFO "Hysteria 镜像已更新到最新版本"
-                    else
-                        log WARN "镜像拉取失败，将使用本地缓存版本"
+                    # 強制拉取最新鏡像（不使用緩存）
+                    log INFO "正在拉取最新的 Hysteria 鏡像..."
+                    if ! docker pull "${HYSTERIA_IMAGE_NAME}"; then
+                        log ERROR "Hysteria 鏡像拉取失敗，安裝中止。正在清除本地鏡像緩存..."
+                        docker rmi "${HYSTERIA_IMAGE_NAME}" &>/dev/null
+                        log INFO "本地鏡像緩存已清除。請檢查網路連線或鏡像名稱是否正確。"
+                        press_any_key
+                        continue
                     fi
+                    log INFO "Hysteria 鏡像已成功拉取。"
                     
                     # 生成配置並部署
                     generate_hysteria_config "$HY_DOMAIN" "$PASSWORD" "$LOG_MODE"
@@ -631,6 +644,8 @@ manage_hysteria() {
                     if [[ "$uninstall_choice" =~ ^[yY]$ ]]; then
                         docker stop "${HYSTERIA_CONTAINER_NAME}" &>/dev/null && docker rm "${HYSTERIA_CONTAINER_NAME}" &>/dev/null
                         rm -rf "${HYSTERIA_CONFIG_DIR}"
+                        log INFO "正在清除 Hysteria 鏡像緩存..."
+                        docker rmi "${HYSTERIA_IMAGE_NAME}" &>/dev/null && log INFO "Hysteria 鏡像已刪除。" || log WARN "Hysteria 鏡像刪除失敗或不存在。"
                         log INFO "Hysteria 已卸載，設定檔已清除。";
                     fi
                     press_any_key; break;;
@@ -657,13 +672,16 @@ manage_adguard() {
                     log WARN "DNS 服務將使用 53 端口。請確保主機的 53 端口未被 systemd-resolved 等服務占用。"
                     log WARN "如果 53 端口衝突導致安裝失敗，請先停用主機的 DNS 服務再重試。"
                     
-                    # 拉取最新镜像
-                    log INFO "正在拉取最新的 AdGuard Home 镜像..."
-                    if docker pull "${ADGUARD_IMAGE_NAME}"; then
-                        log INFO "AdGuard Home 镜像已更新到最新版本"
-                    else
-                        log WARN "镜像拉取失败，将使用本地缓存版本"
+                    # 強制拉取最新鏡像（不使用緩存）
+                    log INFO "正在拉取最新的 AdGuard Home 鏡像..."
+                    if ! docker pull "${ADGUARD_IMAGE_NAME}"; then
+                        log ERROR "AdGuard Home 鏡像拉取失敗，安裝中止。正在清除本地鏡像緩存..."
+                        docker rmi "${ADGUARD_IMAGE_NAME}" &>/dev/null
+                        log INFO "本地鏡像緩存已清除。請檢查網路連線或鏡像名稱是否正確。"
+                        press_any_key
+                        continue
                     fi
+                    log INFO "AdGuard Home 鏡像已成功拉取。"
                     
                     mkdir -p "${ADGUARD_CONFIG_DIR}" "${ADGUARD_WORK_DIR}"
                     docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
@@ -697,6 +715,8 @@ manage_adguard() {
                         docker stop "${ADGUARD_CONTAINER_NAME}" &>/dev/null && docker rm "${ADGUARD_CONTAINER_NAME}" &>/dev/null
                         read -p "是否刪除 AdGuard Home 的所有設定檔和數據？(y/N): " del_choice < /dev/tty
                         if [[ "$del_choice" =~ ^[yY]$ ]]; then rm -rf "${APP_BASE_DIR}/adguard"; log INFO "AdGuard Home 的設定和數據已刪除。"; fi
+                        log INFO "正在清除 AdGuard Home 鏡像緩存..."
+                        docker rmi "${ADGUARD_IMAGE_NAME}" &>/dev/null && log INFO "AdGuard Home 鏡像已刪除。" || log WARN "AdGuard Home 鏡像刪除失敗或不存在。"
                         log INFO "AdGuard Home 已卸載。";
                     fi
                     press_any_key; break;;
@@ -756,6 +776,13 @@ uninstall_all_services() {
     log INFO "正在刪除本地設定檔和數據..."; rm -rf "${APP_BASE_DIR}"; log INFO "本地設定檔和數據目錄 (${APP_BASE_DIR}) 已刪除。"
     log INFO "正在刪除 Docker 數據卷..."; docker volume rm "${CADDY_DATA_VOLUME}" &>/dev/null; log INFO "Docker 數據卷已刪除。"
     log INFO "正在刪除共享網路..."; docker network rm "${SHARED_NETWORK_NAME}" &>/dev/null; log INFO "共享網路已刪除。"
+    
+    log INFO "正在清除所有鏡像緩存..."
+    docker rmi "${CADDY_IMAGE_NAME}" &>/dev/null && log INFO "Caddy 鏡像已刪除。"
+    docker rmi "${WARP_IMAGE_NAME}" &>/dev/null && log INFO "WARP 鏡像已刪除。"
+    docker rmi "${HYSTERIA_IMAGE_NAME}" &>/dev/null && log INFO "Hysteria 鏡像已刪除。"
+    docker rmi "${ADGUARD_IMAGE_NAME}" &>/dev/null && log INFO "AdGuard Home 鏡像已刪除。"
+    
     log INFO "所有服務已徹底清理完畢。"
 }
 
