@@ -17,6 +17,12 @@ curl -sSL https://raw.githubusercontent.com/thenogodcom/warp/main/hwc.sh | sudo 
 hwc
 ```
 
+更新腳本
+
+```bash
+curl -sSL "https://raw.githubusercontent.com/thenogodcom/warp/main/hwc.sh" -o /usr/local/bin/hwc
+```
+
 即可隨時啟動管理介面。
 
 ---
